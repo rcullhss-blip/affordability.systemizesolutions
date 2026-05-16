@@ -2,7 +2,7 @@
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
-import { getJob, getJobDownloadAssessment, getJobDownloadLocs, getLocsZipUrl } from "@/lib/api";
+import { getJob, getJobDownloadAssessment, getJobDownloadLocs, getLocsZipUrl, submitFeedback } from "@/lib/api";
 import { TrafficLightBadge } from "@/components/ui/TrafficLight";
 
 const STATUS_META: Record<string, { label: string; cls: string }> = {
@@ -41,6 +41,18 @@ export default function JobDetailPage() {
   const [job, setJob] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [downloading, setDownloading] = useState<string | null>(null);
+  const [feedbackOpen, setFeedbackOpen] = useState(false);
+  const [feedbackNote, setFeedbackNote] = useState("");
+  const [feedbackSent, setFeedbackSent] = useState(false);
+
+  async function sendFeedback() {
+    if (!feedbackNote.trim() || !id) return;
+    await submitFeedback(Number(id), feedbackNote.trim());
+    setFeedbackNote("");
+    setFeedbackOpen(false);
+    setFeedbackSent(true);
+    setTimeout(() => setFeedbackSent(false), 4000);
+  }
 
   useEffect(() => {
     if (!id) return;
@@ -190,6 +202,53 @@ export default function JobDetailPage() {
               </a>
             )}
           </div>
+        </div>
+      )}
+
+      {/* Feedback */}
+      {job.status === "COMPLETE" && (
+        <div className="bg-gray-900 border border-gray-800 rounded-2xl p-5 mb-6">
+          <div className="flex items-center justify-between">
+            <h2 className="text-sm font-semibold text-white">Flag an Issue</h2>
+            {feedbackSent && <span className="text-xs text-green-400">✓ Logged</span>}
+          </div>
+          {feedbackOpen ? (
+            <div className="mt-3 space-y-2">
+              <textarea
+                value={feedbackNote}
+                onChange={(e) => setFeedbackNote(e.target.value)}
+                placeholder="Describe the issue — e.g. wrong defendant name, missing agreement date, incorrect allegation…"
+                className="w-full bg-gray-800 border border-gray-700 rounded-xl px-3 py-2.5 text-sm text-white placeholder-gray-500 resize-none focus:outline-none focus:border-gray-500"
+                rows={3}
+                autoFocus
+              />
+              <div className="flex gap-2">
+                <button
+                  onClick={sendFeedback}
+                  disabled={!feedbackNote.trim()}
+                  className="bg-red-700 hover:bg-red-600 disabled:opacity-40 text-white text-xs font-semibold px-4 py-2 rounded-lg transition-colors"
+                >
+                  Submit Issue
+                </button>
+                <button
+                  onClick={() => { setFeedbackOpen(false); setFeedbackNote(""); }}
+                  className="text-gray-500 hover:text-gray-300 text-xs px-3 py-2 transition-colors"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          ) : (
+            <button
+              onClick={() => setFeedbackOpen(true)}
+              className="mt-2 flex items-center gap-2 text-xs text-gray-400 hover:text-red-400 transition-colors"
+            >
+              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
+              </svg>
+              Report a problem with this job
+            </button>
+          )}
         </div>
       )}
 

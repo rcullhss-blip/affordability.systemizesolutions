@@ -4,7 +4,7 @@ import Link from "next/link";
 import { StatCard } from "@/components/dashboard/StatCard";
 import { BatchTable } from "@/components/dashboard/BatchTable";
 import { UploadPanel } from "@/components/dashboard/UploadPanel";
-import { getBatches, getAnalyticsSummary, getSpotChecks, markSpotCheckReviewed } from "@/lib/api";
+import { getBatches, getAnalyticsSummary, getSpotChecks, markSpotCheckReviewed, getOpenFeedback, resolveFeedback } from "@/lib/api";
 
 function SpotCheckBanner({ checks, onDismiss }: { checks: any[]; onDismiss: (id: number) => void }) {
   if (!checks.length) return null;
@@ -51,13 +51,15 @@ export default function DashboardPage() {
   const [summary, setSummary] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [spotChecks, setSpotChecks] = useState<any[]>([]);
+  const [openFeedback, setOpenFeedback] = useState<any[]>([]);
 
   const reload = () => {
-    Promise.all([getBatches(), getAnalyticsSummary(), getSpotChecks()])
-      .then(([b, s, sc]) => {
+    Promise.all([getBatches(), getAnalyticsSummary(), getSpotChecks(), getOpenFeedback()])
+      .then(([b, s, sc, fb]) => {
         setBatches(b);
         setSummary(s);
         setSpotChecks(sc);
+        setOpenFeedback(fb);
       })
       .catch(() => {})
       .finally(() => setLoading(false));
@@ -87,6 +89,33 @@ export default function DashboardPage() {
       </div>
 
       <SpotCheckBanner checks={spotChecks} onDismiss={dismissSpotCheck} />
+
+      {openFeedback.length > 0 && (
+        <div className="mb-6 bg-red-900/20 border border-red-800 rounded-xl p-4">
+          <p className="text-sm font-semibold text-red-400 mb-3">
+            ⚠ {openFeedback.length} Open Issue{openFeedback.length > 1 ? "s" : ""} Flagged
+          </p>
+          <div className="space-y-2">
+            {openFeedback.map((f: any) => (
+              <div key={f.id} className="flex items-start justify-between gap-4 bg-red-950/30 rounded-lg px-3 py-2">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2 mb-0.5">
+                    <Link href={`/jobs/${f.job_id}`} className="text-sm font-medium text-white hover:text-red-300">{f.client_name}</Link>
+                    {f.matter_ref && <span className="text-xs text-gray-500 font-mono">{f.matter_ref}</span>}
+                  </div>
+                  <p className="text-xs text-gray-400 truncate">{f.note}</p>
+                </div>
+                <button
+                  onClick={async () => { await resolveFeedback(f.id); setOpenFeedback(prev => prev.filter(x => x.id !== f.id)); }}
+                  className="text-xs bg-red-800/40 hover:bg-red-800/60 text-red-200 px-3 py-1 rounded-lg transition-colors shrink-0 font-medium"
+                >
+                  Resolved
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       <div className="grid grid-cols-2 lg:grid-cols-5 gap-3 md:gap-4 mb-6 md:mb-8">
         <StatCard label="Total Assessments" value={summary?.total_assessments ?? "—"} />

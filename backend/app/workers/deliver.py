@@ -4,7 +4,7 @@ from app.core.database import SessionLocal
 from app.models.tables import Job, LenderResult
 from datetime import datetime
 
-SPOT_CHECK_RATE = 0.10  # 10% of completed jobs flagged for review
+SPOT_CHECK_RATE = 0.025  # 25 in 1000 completed jobs flagged for review
 
 
 @celery_app.task(bind=True, max_retries=2, default_retry_delay=30)

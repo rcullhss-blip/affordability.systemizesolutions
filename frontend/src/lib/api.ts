@@ -124,3 +124,18 @@ export async function markSpotCheckReviewed(jobId: number) {
   const { data } = await api.post(`/api/v1/jobs/${jobId}/spot-check/reviewed`);
   return data;
 }
+
+export async function submitFeedback(jobId: number, note: string) {
+  const { data } = await api.post(`/api/v1/jobs/${jobId}/feedback`, { note });
+  return data;
+}
+
+export async function getOpenFeedback() {
+  const { data } = await api.get("/api/v1/jobs/feedback/open");
+  return data;
+}
+
+export async function resolveFeedback(feedbackId: number) {
+  const { data } = await api.post(`/api/v1/jobs/feedback/${feedbackId}/resolved`);
+  return data;
+}

@@ -3,8 +3,9 @@ import re
 import zipfile
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 from sqlalchemy.orm import Session, selectinload
-from sqlalchemy import select
+from sqlalchemy import select, text
 from app.core.database import get_db
 from app.core.storage import get_download_url, download_bytes
 from app.core.config import settings
@@ -12,6 +13,10 @@ from app.core.lender_blocklist import is_blocked
 from app.models.tables import Job
 
 router = APIRouter()
+
+
+class FeedbackIn(BaseModel):
+    note: str
 
 
 @router.get("/{job_id}")
@@ -150,5 +155,63 @@ def mark_spot_check_reviewed(job_id: int, db: Session = Depends(get_db)):
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     job.spot_check_reviewed = True
+    db.commit()
+    return {"ok": True}
+
+
+@router.post("/{job_id}/feedback")
+def submit_feedback(job_id: int, body: FeedbackIn, db: Session = Depends(get_db)):
+    """Log an issue or correction note against a job."""
+    job = db.get(Job, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    db.execute(
+        text("INSERT INTO job_feedback (job_id, note) VALUES (:job_id, :note)"),
+        {"job_id": job_id, "note": body.note.strip()},
+    )
+    db.commit()
+    return {"ok": True}
+
+
+@router.get("/{job_id}/feedback")
+def get_feedback(job_id: int, db: Session = Depends(get_db)):
+    rows = db.execute(
+        text("SELECT id, note, created_at, resolved FROM job_feedback WHERE job_id = :id ORDER BY created_at DESC"),
+        {"id": job_id},
+    ).fetchall()
+    return [{"id": r.id, "note": r.note, "created_at": r.created_at.isoformat(), "resolved": r.resolved} for r in rows]
+
+
+@router.get("/feedback/open")
+def get_open_feedback(db: Session = Depends(get_db)):
+    """All unresolved feedback across all jobs — for the admin dashboard queue."""
+    rows = db.execute(
+        text("""
+            SELECT f.id, f.job_id, f.note, f.created_at,
+                   c.name AS client_name, c.matter_ref
+            FROM job_feedback f
+            LEFT JOIN jobs j ON j.id = f.job_id
+            LEFT JOIN clients c ON c.id = j.client_id
+            WHERE f.resolved = FALSE
+            ORDER BY f.created_at DESC
+        """)
+    ).fetchall()
+    return [
+        {
+            "id": r.id, "job_id": r.job_id, "note": r.note,
+            "created_at": r.created_at.isoformat(),
+            "client_name": r.client_name or f"Job #{r.job_id}",
+            "matter_ref": r.matter_ref,
+        }
+        for r in rows
+    ]
+
+
+@router.post("/feedback/{feedback_id}/resolved")
+def resolve_feedback(feedback_id: int, db: Session = Depends(get_db)):
+    db.execute(
+        text("UPDATE job_feedback SET resolved = TRUE WHERE id = :id"),
+        {"id": feedback_id},
+    )
     db.commit()
     return {"ok": True}
