@@ -37,8 +37,11 @@ export default function UploadPortalPage() {
     form.append("batch_name", batchName.trim());
 
     const name = file.name.toLowerCase();
-    const isZip = name.endsWith(".zip");
-    const endpoint = isZip ? "/api/v1/upload/zip" : "/api/v1/upload/file";
+    const endpoint = name.endsWith(".zip")
+      ? "/api/v1/upload/zip"
+      : name.endsWith(".csv")
+      ? "/api/v1/upload/csv"
+      : "/api/v1/upload/file";
 
     const xhr = new XMLHttpRequest();
     xhr.open("POST", `${API}${endpoint}`);
