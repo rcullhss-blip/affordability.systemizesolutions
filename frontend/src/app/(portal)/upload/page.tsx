@@ -87,7 +87,7 @@ export default function UploadPortalPage() {
         {/* Header */}
         <header className="portal-header">
           <div className="portal-header-left">
-            <Image src="/first-legal-logo.png" alt="First Legal Solicitors" width={130} height={42} style={{ objectFit: "contain" }} priority />
+            <Image src="/logo-white.png" alt="First Legal Solicitors" width={108} height={72} style={{ objectFit: "contain" }} priority />
             <div className="portal-divider" />
             <span className="portal-badge">Secure Upload Portal</span>
           </div>
