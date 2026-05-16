@@ -1,6 +1,5 @@
 "use client";
 import { useRef, useState, useCallback } from "react";
-import Image from "next/image";
 
 const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
@@ -87,7 +86,8 @@ export default function UploadPortalPage() {
         {/* Header */}
         <header className="portal-header">
           <div className="portal-header-left">
-            <Image src="/logo-white.png" alt="First Legal Solicitors" width={108} height={72} style={{ objectFit: "contain" }} priority />
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src="/logo-white.png" alt="First Legal Solicitors" style={{ height: "52px", width: "auto", objectFit: "contain" }} />
             <div className="portal-divider" />
             <span className="portal-badge">Secure Upload Portal</span>
           </div>
