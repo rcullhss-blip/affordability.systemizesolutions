@@ -87,7 +87,7 @@ export default function UploadPortalPage() {
         <header className="portal-header">
           <div className="portal-header-left">
             {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src="/logo-white.png" alt="First Legal Solicitors" style={{ height: "52px", width: "auto", objectFit: "contain" }} />
+            <img src="/first-legal-logo.png" alt="First Legal Solicitors" style={{ height: "52px", width: "52px", objectFit: "cover", borderRadius: "6px" }} />
             <div className="portal-divider" />
             <span className="portal-badge">Secure Upload Portal</span>
           </div>
