@@ -58,6 +58,8 @@ class Job(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    spot_check_required: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    spot_check_reviewed: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
 
     batch: Mapped[Optional["Batch"]] = relationship("Batch", back_populates="jobs")
     client: Mapped[Optional["Client"]] = relationship("Client", back_populates="jobs")

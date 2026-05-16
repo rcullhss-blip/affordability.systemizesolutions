@@ -1,62 +1,121 @@
 "use client";
 import Link from "next/link";
-import Image from "next/image";
 import { usePathname } from "next/navigation";
+import { useState, useEffect } from "react";
 
 const NAV = [
   { label: "Dashboard", href: "/" },
-  { label: "Batches", href: "/batches" },
-  { label: "Clients", href: "/clients" },
+  { label: "Batches",   href: "/batches" },
+  { label: "Clients",   href: "/clients" },
   { label: "Analytics", href: "/analytics" },
 ];
 
 export function Sidebar() {
   const pathname = usePathname();
+  const [open, setOpen] = useState(false);
+
+  useEffect(() => { setOpen(false); }, [pathname]);
+
+  // Lock body scroll when mobile nav is open
+  useEffect(() => {
+    document.body.style.overflow = open ? "hidden" : "";
+    return () => { document.body.style.overflow = ""; };
+  }, [open]);
+
+  const navLinks = (
+    <nav className="space-y-0.5 flex-1">
+      {NAV.map((item) => {
+        const active =
+          item.href === "/"
+            ? pathname === "/"
+            : pathname === item.href || pathname.startsWith(item.href + "/");
+        return (
+          <Link
+            key={item.href}
+            href={item.href}
+            className={`flex items-center px-3 py-3 md:py-2.5 rounded-lg text-sm font-medium transition-all ${
+              active
+                ? "bg-blue-600 text-white shadow-sm"
+                : "text-gray-400 hover:bg-gray-800 hover:text-white"
+            }`}
+          >
+            <NavIcon href={item.href} active={active} />
+            <span className="ml-2.5">{item.label}</span>
+          </Link>
+        );
+      })}
+    </nav>
+  );
 
   return (
-    <aside className="w-60 shrink-0 min-h-screen bg-gray-900 border-r border-gray-800 flex flex-col p-5 sticky top-0 h-screen overflow-y-auto">
-      <div className="mb-8">
-        <Link href="/">
-          <Image
-            src="/logo-white.png"
-            alt="Systemize"
-            width={140}
-            height={40}
-            className="object-contain"
-            priority
-          />
+    <>
+      {/* ── Mobile top bar ─────────────────────────────────────── */}
+      <div className="md:hidden fixed top-0 left-0 right-0 z-50 h-14 bg-gray-900 border-b border-gray-800 flex items-center justify-between px-4">
+        <Link href="/" className="flex items-center gap-2">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src="/logo-white.png" alt="Systemize" style={{ height: "28px", width: "auto" }} />
         </Link>
-        <p className="text-xs text-gray-500 mt-2">Affordability Platform</p>
+        <button
+          onClick={() => setOpen(o => !o)}
+          className="p-2 rounded-lg text-gray-400 hover:text-white hover:bg-gray-800 transition-colors"
+          aria-label={open ? "Close menu" : "Open menu"}
+        >
+          {open ? (
+            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          ) : (
+            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M4 6h16M4 12h16M4 18h16" />
+            </svg>
+          )}
+        </button>
       </div>
 
-      <nav className="space-y-0.5 flex-1">
-        {NAV.map((item) => {
-          const active =
-            item.href === "/"
-              ? pathname === "/"
-              : pathname === item.href || pathname.startsWith(item.href + "/");
-          return (
-            <Link
-              key={item.href}
-              href={item.href}
-              className={`flex items-center px-3 py-2.5 rounded-lg text-sm font-medium transition-all ${
-                active
-                  ? "bg-blue-600 text-white shadow-sm"
-                  : "text-gray-400 hover:bg-gray-800 hover:text-white"
-              }`}
-            >
-              <NavIcon href={item.href} active={active} />
-              <span className="ml-2.5">{item.label}</span>
-            </Link>
-          );
-        })}
-      </nav>
+      {/* ── Mobile overlay backdrop ─────────────────────────────── */}
+      {open && (
+        <div
+          className="md:hidden fixed inset-0 bg-black/60 z-40"
+          onClick={() => setOpen(false)}
+        />
+      )}
 
-      <div className="pt-4 border-t border-gray-800">
-        <p className="text-xs text-gray-600">Fintech-grade legal infrastructure</p>
-        <p className="text-xs text-gray-700 mt-0.5">v2.0</p>
-      </div>
-    </aside>
+      {/* ── Sidebar panel ──────────────────────────────────────── */}
+      <aside className={`
+        fixed md:sticky top-0 left-0 h-screen z-50
+        w-72 md:w-60 shrink-0 bg-gray-900 border-r border-gray-800
+        flex flex-col p-5 overflow-y-auto
+        transition-transform duration-200 ease-in-out
+        ${open ? "translate-x-0" : "-translate-x-full"}
+        md:translate-x-0
+      `}>
+        {/* Logo — desktop only (mobile has top bar) */}
+        <div className="hidden md:block mb-8">
+          <Link href="/">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src="/logo-white.png" alt="Systemize" style={{ height: "36px", width: "auto" }} />
+          </Link>
+          <p className="text-xs text-gray-500 mt-2">Affordability Platform</p>
+        </div>
+
+        {/* Mobile sidebar header */}
+        <div className="md:hidden mb-6 flex items-center justify-between">
+          <p className="text-xs font-semibold text-gray-400 uppercase tracking-widest">Menu</p>
+          <button onClick={() => setOpen(false)} className="p-1 text-gray-500 hover:text-white">
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+
+        {navLinks}
+
+        <div className="pt-4 border-t border-gray-800">
+          <p className="text-xs text-gray-600">Fintech-grade legal infrastructure</p>
+          <p className="text-xs text-gray-700 mt-0.5">v2.0</p>
+        </div>
+      </aside>
+    </>
   );
 }
 

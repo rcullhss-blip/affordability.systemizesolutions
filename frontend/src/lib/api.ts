@@ -112,3 +112,15 @@ export async function uploadCsv(file: File, batchName: string) {
   const { data } = await api.post("/api/v1/upload/csv", form);
   return data;
 }
+
+// ── Spot checks ────────────────────────────────────────────────────────────
+
+export async function getSpotChecks() {
+  const { data } = await api.get("/api/v1/jobs/spot-checks");
+  return data;
+}
+
+export async function markSpotCheckReviewed(jobId: number) {
+  const { data } = await api.post(`/api/v1/jobs/${jobId}/spot-check/reviewed`);
+  return data;
+}

@@ -119,3 +119,36 @@ def download_locs_zip(job_id: int, db: Session = Depends(get_db)):
         media_type="application/zip",
         headers={"Content-Disposition": f'attachment; filename="{zip_name}"'},
     )
+
+
+@router.get("/spot-checks")
+def get_spot_checks(db: Session = Depends(get_db)):
+    """Return all jobs flagged for spot check that haven't been reviewed yet."""
+    jobs = db.execute(
+        select(Job)
+        .where(Job.spot_check_required == True, Job.spot_check_reviewed == False)
+        .options(selectinload(Job.client))
+        .order_by(Job.completed_at.desc())
+    ).scalars().all()
+    return [
+        {
+            "id": j.id,
+            "batch_id": j.batch_id,
+            "client_name": j.client.name if j.client else f"Job #{j.id}",
+            "matter_ref": j.client.matter_ref if j.client else None,
+            "traffic_light": j.traffic_light,
+            "completed_at": j.completed_at.isoformat() if j.completed_at else None,
+        }
+        for j in jobs
+    ]
+
+
+@router.post("/{job_id}/spot-check/reviewed")
+def mark_spot_check_reviewed(job_id: int, db: Session = Depends(get_db)):
+    """Mark a spot-checked job as reviewed by admin."""
+    job = db.get(Job, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    job.spot_check_reviewed = True
+    db.commit()
+    return {"ok": True}
