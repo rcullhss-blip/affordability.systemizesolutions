@@ -20,6 +20,9 @@ def run_analysis(self, job_id: int):
             return
 
         job.status = "ANALYSING"
+        # Clear any stale lender results from a previous (possibly partial) run
+        # so re-queued jobs don't accumulate duplicate rows.
+        db.query(LenderResult).filter(LenderResult.job_id == job.id).delete()
         db.commit()
 
         schema = copy.deepcopy(job.normalised_data or {})
@@ -96,25 +99,17 @@ def run_analysis(self, job_id: int):
         generate_documents.apply_async(args=[job_id], queue="document")
 
     except Exception as exc:
-        job = db.get(Job, job_id)
-        if job:
-            job.status = "FAILED"
-            job.error_message = f"Analysis failed: {exc}"
-            db.commit()
+        from celery.exceptions import Retry
+        if not isinstance(exc, Retry):
+            job = db.get(Job, job_id)
+            if job:
+                job.status = "FAILED"
+                job.error_message = f"Analysis failed: {exc}"
+                db.commit()
         raise self.retry(exc=exc)
     finally:
         db.close()
 
 
 def _update_batch_counts(db, job):
-    if not job.batch_id:
-        return
-    batch = db.get(Batch, job.batch_id)
-    if not batch:
-        return
-    if job.traffic_light == "GREEN":
-        batch.green_count += 1
-    elif job.traffic_light == "AMBER":
-        batch.amber_count += 1
-    else:
-        batch.red_count += 1
+    pass  # Batch stats are recomputed in deliver.py after job.status = "COMPLETE"

@@ -13,7 +13,7 @@ from reportlab.lib import colors
 from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
 from reportlab.platypus import (
     Paragraph, Spacer, Table, TableStyle,
-    HRFlowable, KeepTogether, Flowable,
+    HRFlowable, KeepTogether, Flowable, SimpleDocTemplate,
 )
 from reportlab.platypus.frames import Frame
 from reportlab.platypus.doctemplate import PageTemplate, BaseDocTemplate
@@ -37,19 +37,19 @@ TL = {
         "text":  "#15803D",
         "bg":    colors.HexColor("#F0FDF4"),
         "bd":    colors.HexColor("#22C55E"),
-        "label": "Strong Claim Indicators",
+        "label": "Strong",
     },
     "AMBER": {
         "text":  "#92400E",
         "bg":    colors.HexColor("#FFFBEB"),
         "bd":    colors.HexColor("#F59E0B"),
-        "label": "Claim Indicators Present",
+        "label": "Borderline",
     },
     "RED": {
         "text":  "#64748B",
         "bg":    colors.HexColor("#F8FAFC"),
         "bd":    colors.HexColor("#CBD5E1"),
-        "label": "Insufficient Evidence",
+        "label": "Weak",
     },
 }
 
@@ -213,6 +213,13 @@ class RoundedPanel(Flowable):
 
         self._h = total_h
         return self._aw, self._h
+
+    def split(self, aw, ah):
+        # Return [self] so ReportLab moves this panel to the next page rather
+        # than trying to break it mid-render. "Splitting error(n==2)" is raised
+        # when split() returns 2 items in certain layout contexts; returning
+        # [self] avoids that while still allowing page-breaks before the panel.
+        return [self]
 
     def draw(self):
         canv = self.canv
@@ -391,7 +398,7 @@ def _tl_badge(tl):
     tl  = str(tl).upper()
     cfg = TL.get(tl, TL["RED"])
     p   = Paragraph(
-        f'<font color="{cfg["text"]}">●&nbsp;&nbsp;<b>{cfg["label"]}</b></font>',
+        f'<font color="{cfg["text"]}"><b>{cfg["label"]}</b></font>',
         _S("badge", fontName="Helvetica-Bold", fontSize=14, leading=18,
            alignment=TA_CENTER),
     )
@@ -537,7 +544,7 @@ def _lender_card(result, accounts):
     items.append(Paragraph(
         f'<font color="#0F172A"><b>{lender}</b></font>'
         f'&nbsp;&nbsp;&nbsp;'
-        f'<font color="{cfg["text"]}">● <b>{cfg["label"]}</b></font>',
+        f'<font color="{cfg["text"]}"><b>{cfg["label"]}</b></font>',
         _S("lh", fontName="Helvetica-Bold", fontSize=11,
            textColor=C_TEXT, leading=16),
     ))
@@ -577,11 +584,8 @@ def _lender_card(result, accounts):
                     _S(f"fl{sev}", fontName="Helvetica", fontSize=7.5, leading=11),
                 ))
 
-    return KeepTogether([
-        RoundedPanel(items, bg=C_WHITE, border=cfg["bd"], border_width=1.5,
-                     radius=10, pad_h=14, pad_v=12, gap=7),
-        Spacer(1, 10),
-    ])
+    return RoundedPanel(items, bg=C_WHITE, border=cfg["bd"], border_width=1.5,
+                        radius=10, pad_h=14, pad_v=12, gap=7)
 
 
 # ── All accounts table ────────────────────────────────────────────────────────
@@ -779,6 +783,7 @@ def generate_assessment_pdf(schema: dict, lender_results) -> bytes:
         story.append(Spacer(1, 10))
         for r in in_scope:
             story.append(_lender_card(r, accounts))
+            story.append(Spacer(1, 10))
     else:
         story.append(Paragraph(
             "No lenders reached the preliminary threshold for a potential affordability claim.",
@@ -825,5 +830,50 @@ def generate_assessment_pdf(schema: dict, lender_results) -> bytes:
         st["small"],
     ))
 
-    doc.build(story)
+    try:
+        doc.build(story)
+    except Exception:
+        # Fallback: plain paragraphs via SimpleDocTemplate — avoids all RoundedPanel
+        # layout issues on reports with unusually large content.
+        try:
+            buf2 = io.BytesIO()
+            doc2 = SimpleDocTemplate(
+                buf2, pagesize=A4,
+                leftMargin=ML, rightMargin=MR,
+                topMargin=MT + HEADER_H, bottomMargin=MB + FOOTER_H,
+            )
+            plain = _S("fb", fontName="Helvetica", fontSize=9, leading=14)
+            bold  = _S("fbb", fontName="Helvetica-Bold", fontSize=10, leading=14)
+            fallback = [
+                Paragraph(f"<b>Affordability Assessment — {client_name}</b>", bold),
+                Paragraph(f"Matter ref: {matter_ref}  |  DOB: {dob}  |  {today}", plain),
+                Spacer(1, 10),
+                Paragraph(f"Overall: <b>{overall}</b>  |  In-scope lenders: {len(in_scope)}  |  LOCs: {locs_count}", plain),
+                Spacer(1, 10),
+            ]
+            for r in in_scope:
+                ldr = getattr(r, "lender_name", "Unknown")
+                tl  = getattr(r, "traffic_light", "RED")
+                fallback.append(Paragraph(f"<b>{ldr}</b> — {tl}", bold))
+                for f in (getattr(r, "risk_flags", None) or []):
+                    if isinstance(f, dict):
+                        d = _strip_score(f.get("description", ""))
+                        if d:
+                            fallback.append(Paragraph(f"• {d}", plain))
+                fallback.append(Spacer(1, 6))
+            for r in out_scope:
+                ldr = getattr(r, "lender_name", "Unknown")
+                fallback.append(Paragraph(f"<b>{ldr}</b> — Insufficient evidence", plain))
+            doc2.build(fallback)
+            return buf2.getvalue()
+        except Exception:
+            # Last resort: minimal single-page PDF with just the header line.
+            buf3 = io.BytesIO()
+            doc3 = SimpleDocTemplate(buf3, pagesize=A4)
+            plain = _S("fb2", fontName="Helvetica", fontSize=9, leading=14)
+            doc3.build([Paragraph(
+                f"Affordability Assessment — {client_name} | {matter_ref} | Overall: {overall}",
+                plain,
+            )])
+            return buf3.getvalue()
     return buf.getvalue()

@@ -45,12 +45,36 @@ migrate:
 backend:
 	cd backend && PYTHONPATH=. $(UVICORN) app.main:app --host 0.0.0.0 --port 8000 --reload
 
-## Start Celery worker (all queues for dev)
+## Start Celery worker (all queues, gevent pool)
 worker:
 	cd backend && PYTHONPATH=. $(CELERY) -A app.core.celery_app worker \
 		--loglevel=info \
-		--concurrency=4 \
-		--queues=fetch,extract,parse,analyse,document,deliver
+		--pool=gevent \
+		--concurrency=50 \
+		--queues=fetch,extract,parse,analyse,document,deliver,watchdog
+
+## Start dedicated gevent workers per queue for mass processing
+workers-mass:
+	@echo "Starting dedicated gevent workers for all queues..."
+	cd backend && PYTHONPATH=. $(CELERY) -A app.core.celery_app worker \
+		--hostname=fetch-worker@%h --pool=gevent --concurrency=30 \
+		--queues=fetch --loglevel=info &
+	cd backend && PYTHONPATH=. $(CELERY) -A app.core.celery_app worker \
+		--hostname=extract-worker@%h --pool=gevent --concurrency=30 \
+		--queues=extract --loglevel=info &
+	cd backend && PYTHONPATH=. $(CELERY) -A app.core.celery_app worker \
+		--hostname=parse-worker@%h --pool=gevent --concurrency=30 \
+		--queues=parse --loglevel=info &
+	cd backend && PYTHONPATH=. $(CELERY) -A app.core.celery_app worker \
+		--hostname=analyse-worker@%h --pool=gevent --concurrency=30 \
+		--queues=analyse --loglevel=info &
+	cd backend && PYTHONPATH=. $(CELERY) -A app.core.celery_app worker \
+		--hostname=document-worker@%h --pool=gevent --concurrency=30 \
+		--queues=document --loglevel=info &
+	cd backend && PYTHONPATH=. $(CELERY) -A app.core.celery_app worker \
+		--hostname=deliver-worker@%h --pool=gevent --concurrency=30 \
+		--queues=deliver --loglevel=info &
+	@echo "All 6 dedicated queue workers started in background."
 
 ## Start Next.js frontend
 frontend:

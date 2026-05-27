@@ -19,6 +19,53 @@ class FeedbackIn(BaseModel):
     note: str
 
 
+@router.get("/spot-checks")
+def get_spot_checks(db: Session = Depends(get_db)):
+    """Return all jobs flagged for spot check that haven't been reviewed yet."""
+    jobs = db.execute(
+        select(Job)
+        .where(Job.spot_check_required == True, Job.spot_check_reviewed == False)
+        .options(selectinload(Job.client))
+        .order_by(Job.completed_at.desc())
+    ).scalars().all()
+    return [
+        {
+            "id": j.id,
+            "batch_id": j.batch_id,
+            "client_name": j.client.name if j.client else f"Job #{j.id}",
+            "matter_ref": j.client.matter_ref if j.client else None,
+            "traffic_light": j.traffic_light,
+            "completed_at": j.completed_at.isoformat() if j.completed_at else None,
+        }
+        for j in jobs
+    ]
+
+
+@router.get("/feedback/open")
+def get_open_feedback(db: Session = Depends(get_db)):
+    """All unresolved feedback across all jobs — for the admin dashboard queue."""
+    rows = db.execute(
+        text("""
+            SELECT f.id, f.job_id, f.note, f.created_at,
+                   c.name AS client_name, c.matter_ref
+            FROM job_feedback f
+            LEFT JOIN jobs j ON j.id = f.job_id
+            LEFT JOIN clients c ON c.id = j.client_id
+            WHERE f.resolved = FALSE
+            ORDER BY f.created_at DESC
+        """)
+    ).fetchall()
+    return [
+        {
+            "id": r.id, "job_id": r.job_id, "note": r.note,
+            "created_at": r.created_at.isoformat(),
+            "client_name": r.client_name or f"Job #{r.job_id}",
+            "matter_ref": r.matter_ref,
+        }
+        for r in rows
+    ]
+
+
 @router.get("/{job_id}")
 def get_job(job_id: int, db: Session = Depends(get_db)):
     job = db.execute(
@@ -126,28 +173,6 @@ def download_locs_zip(job_id: int, db: Session = Depends(get_db)):
     )
 
 
-@router.get("/spot-checks")
-def get_spot_checks(db: Session = Depends(get_db)):
-    """Return all jobs flagged for spot check that haven't been reviewed yet."""
-    jobs = db.execute(
-        select(Job)
-        .where(Job.spot_check_required == True, Job.spot_check_reviewed == False)
-        .options(selectinload(Job.client))
-        .order_by(Job.completed_at.desc())
-    ).scalars().all()
-    return [
-        {
-            "id": j.id,
-            "batch_id": j.batch_id,
-            "client_name": j.client.name if j.client else f"Job #{j.id}",
-            "matter_ref": j.client.matter_ref if j.client else None,
-            "traffic_light": j.traffic_light,
-            "completed_at": j.completed_at.isoformat() if j.completed_at else None,
-        }
-        for j in jobs
-    ]
-
-
 @router.post("/{job_id}/spot-check/reviewed")
 def mark_spot_check_reviewed(job_id: int, db: Session = Depends(get_db)):
     """Mark a spot-checked job as reviewed by admin."""
@@ -180,31 +205,6 @@ def get_feedback(job_id: int, db: Session = Depends(get_db)):
         {"id": job_id},
     ).fetchall()
     return [{"id": r.id, "note": r.note, "created_at": r.created_at.isoformat(), "resolved": r.resolved} for r in rows]
-
-
-@router.get("/feedback/open")
-def get_open_feedback(db: Session = Depends(get_db)):
-    """All unresolved feedback across all jobs — for the admin dashboard queue."""
-    rows = db.execute(
-        text("""
-            SELECT f.id, f.job_id, f.note, f.created_at,
-                   c.name AS client_name, c.matter_ref
-            FROM job_feedback f
-            LEFT JOIN jobs j ON j.id = f.job_id
-            LEFT JOIN clients c ON c.id = j.client_id
-            WHERE f.resolved = FALSE
-            ORDER BY f.created_at DESC
-        """)
-    ).fetchall()
-    return [
-        {
-            "id": r.id, "job_id": r.job_id, "note": r.note,
-            "created_at": r.created_at.isoformat(),
-            "client_name": r.client_name or f"Job #{r.job_id}",
-            "matter_ref": r.matter_ref,
-        }
-        for r in rows
-    ]
 
 
 @router.post("/feedback/{feedback_id}/resolved")

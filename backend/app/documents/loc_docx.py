@@ -767,9 +767,6 @@ def generate_loc_docx(schema: dict, lender_result, review_warnings: list[str] | 
         section.top_margin    = Cm(2.0)
         section.bottom_margin = Cm(2.54)
 
-    if review_warnings:
-        _review_notice(doc, review_warnings)
-
     # ── Letterhead — logo left, date right ───────────────────────────────
     logo_path = os.path.normpath(FIRM_LOGO)
     hdr_table = doc.add_table(rows=1, cols=2)

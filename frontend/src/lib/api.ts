@@ -2,7 +2,10 @@ import axios from "axios";
 
 const BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
-export const api = axios.create({ baseURL: BASE });
+export const api = axios.create({
+  baseURL: BASE,
+  headers: { "bypass-tunnel-reminder": "true" },
+});
 
 // ── Batches ────────────────────────────────────────────────────────────────
 

@@ -1,4 +1,5 @@
 from celery import shared_task
+from sqlalchemy.exc import IntegrityError
 from app.core.celery_app import celery_app
 from app.core.database import SessionLocal
 from app.models.tables import Job, Client, Account
@@ -29,14 +30,19 @@ def parse_content(self, job_id: int):
         if not client:
             dob_raw = client_data.get("dob")
             dob_date = _parse_date(dob_raw) if dob_raw else None
-            client = Client(
-                name=client_data.get("name", "Unknown"),
-                dob=dob_date,
-                address=client_data.get("address"),
-                matter_ref=matter_ref,
-            )
-            db.add(client)
-            db.flush()
+            try:
+                client = Client(
+                    name=client_data.get("name", "Unknown"),
+                    dob=dob_date,
+                    address=client_data.get("address"),
+                    matter_ref=matter_ref,
+                )
+                db.add(client)
+                db.flush()
+            except IntegrityError:
+                # Another worker created this client concurrently (same matter_ref)
+                db.rollback()
+                client = db.query(Client).filter(Client.matter_ref == matter_ref).first()
 
         for acc in schema.get("accounts", []):
             account = Account(
@@ -59,11 +65,13 @@ def parse_content(self, job_id: int):
         run_analysis.apply_async(args=[job_id], queue="analyse")
 
     except Exception as exc:
-        job = db.get(Job, job_id)
-        if job:
-            job.status = "FAILED"
-            job.error_message = f"Parsing failed: {exc}"
-            db.commit()
+        from celery.exceptions import Retry
+        if not isinstance(exc, Retry):
+            job = db.get(Job, job_id)
+            if job:
+                job.status = "FAILED"
+                job.error_message = f"Parsing failed: {exc}"
+                db.commit()
         raise self.retry(exc=exc)
     finally:
         db.close()

@@ -13,7 +13,7 @@ from app.workers.fetch import fetch_and_process
 
 router = APIRouter()
 
-ALLOWED_EXTENSIONS = {".pdf", ".html", ".htm", ".csv", ".xlsx", ".zip", ".docx"}
+ALLOWED_EXTENSIONS = {".pdf", ".html", ".htm", ".csv", ".xlsx", ".zip", ".docx", ".json"}
 
 
 def _detect_format(filename: str) -> str:
@@ -30,6 +30,10 @@ async def upload_file(
     fmt = _detect_format(file.filename or "")
     if fmt == "unknown":
         raise HTTPException(status_code=400, detail="Unsupported file format")
+
+    # If someone sends a CSV to this endpoint, route it to the URL-list handler
+    if fmt == ".csv":
+        return await upload_csv(file=file, batch_name=batch_name, db=db)
 
     raw_bytes = await file.read()
     s3_key = f"raw/{uuid.uuid4()}/{file.filename}"
@@ -104,8 +108,11 @@ async def upload_csv(
 ):
     """Accept a CSV of report URLs, create one job per row."""
     content = await file.read()
-    lines = content.decode("utf-8").splitlines()
-    urls = [line.strip() for line in lines if line.strip() and not line.startswith("#")]
+    # Strip UTF-8 BOM if present
+    raw = content.lstrip(b"\xef\xbb\xbf")
+    lines = raw.decode("utf-8", errors="replace").splitlines()
+    # Only keep lines that look like URLs — skip headers, blank lines, comments
+    urls = [line.strip() for line in lines if line.strip().lower().startswith("http")]
 
     if not urls:
         raise HTTPException(status_code=400, detail="No URLs found in CSV")

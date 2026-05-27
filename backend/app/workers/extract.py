@@ -31,11 +31,13 @@ def extract_content(self, job_id: int):
         parse_content.apply_async(args=[job_id], queue="parse")
 
     except Exception as exc:
-        job = db.get(Job, job_id)
-        if job:
-            job.status = "FAILED"
-            job.error_message = f"Extraction failed: {exc}"
-            db.commit()
+        from celery.exceptions import Retry
+        if not isinstance(exc, Retry):
+            job = db.get(Job, job_id)
+            if job:
+                job.status = "FAILED"
+                job.error_message = f"Extraction failed: {exc}"
+                db.commit()
         raise self.retry(exc=exc)
     finally:
         db.close()

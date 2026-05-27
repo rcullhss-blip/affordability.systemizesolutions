@@ -2,7 +2,7 @@ import csv
 import io
 import re
 from datetime import datetime
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session, selectinload
 from sqlalchemy import select
@@ -13,15 +13,15 @@ from app.core.lender_blocklist import is_blocked
 from app.models.tables import Batch, Job
 from app.models.enums import JobStatus
 
-BASE_URL = "http://localhost:8000"
+_FALLBACK_BASE = "http://localhost:8000"
 
 _TITLES = {"MR", "MRS", "MS", "MISS", "DR", "PROF", "SIR", "REV", "MASTER"}
 _UK_POSTCODE = re.compile(r'\b[A-Z]{1,2}\d[A-Z\d]?\s*\d[A-Z]{2}\b', re.I)
 
 _TL_LABELS = {
-    "GREEN": "Strong Claim Indicators",
-    "AMBER": "Claim Indicators Present",
-    "RED":   "Insufficient Evidence",
+    "GREEN": "Strong",
+    "AMBER": "Borderline",
+    "RED":   "Weak",
 }
 
 
@@ -150,11 +150,11 @@ def batch_progress(batch_id: int, db: Session = Depends(get_db)):
     }
 
 
-def _file_url(bucket: str, key: str | None) -> str:
+def _file_url(bucket: str, key: str | None, base_url: str = _FALLBACK_BASE) -> str:
     if not key:
         return ""
     if settings.use_local_storage:
-        return f"{BASE_URL}/api/v1/files/{bucket}/{key}"
+        return f"{base_url}/api/v1/files/{bucket}/{key}"
     try:
         return generate_presigned_url(bucket, key, expires_in=86400)
     except Exception:
@@ -162,7 +162,7 @@ def _file_url(bucket: str, key: str | None) -> str:
 
 
 @router.get("/{batch_id}/export/tracker")
-def export_tracker_csv(batch_id: int, db: Session = Depends(get_db)):
+def export_tracker_csv(batch_id: int, request: Request, db: Session = Depends(get_db)):
     """Proclaim-ready tracker CSV — one row per LOC."""
     batch = db.get(Batch, batch_id)
     if not batch:
@@ -170,10 +170,13 @@ def export_tracker_csv(batch_id: int, db: Session = Depends(get_db)):
 
     jobs = db.execute(
         select(Job)
-        .where(Job.batch_id == batch_id)
+        .where(Job.batch_id == batch_id, Job.status == "COMPLETE")
         .options(selectinload(Job.client), selectinload(Job.lender_results))
         .order_by(Job.created_at.asc())
     ).scalars().all()
+
+    # Derive base URL from the incoming request so file links are accessible externally
+    base_url = str(request.base_url).rstrip("/")
 
     buf = io.StringIO()
     writer = csv.writer(buf)
@@ -208,24 +211,35 @@ def export_tracker_csv(batch_id: int, db: Session = Depends(get_db)):
         res1, res2, res3, postcode = _split_address(raw_addr)
 
         # Document URLs
-        report_url     = _file_url(settings.S3_BUCKET_RAW,     job.s3_raw_key)
-        assessment_url = _file_url(settings.S3_BUCKET_OUTPUTS, job.s3_assessment_key)
+        report_url     = _file_url(settings.S3_BUCKET_RAW,     job.s3_raw_key,     base_url)
+        assessment_url = _file_url(settings.S3_BUCKET_OUTPUTS, job.s3_assessment_key, base_url)
 
         locs = [r for r in job.lender_results if r.loc_generated and r.s3_loc_key]
-        rows_to_write = locs if locs else [None]
+        all_blocked = all(is_blocked(r.lender_name) for r in job.lender_results) if job.lender_results else False
 
-        for r in rows_to_write:
-            defendant       = r.lender_name if r else ""
-            analysis_status = _TL_LABELS.get((r.traffic_light or "").upper(), "") if r else ""
-            case_status     = _case_status(r.loc_generated if r else False, r.traffic_light if r else None)
-            loc_url         = _file_url(settings.S3_BUCKET_OUTPUTS, r.s3_loc_key) if r else ""
-
+        if locs:
+            # One row per LOC
+            for r in locs:
+                defendant       = r.lender_name
+                analysis_status = _TL_LABELS.get((r.traffic_light or "").upper(), "")
+                case_status     = "LOC Generated"
+                loc_url         = _file_url(settings.S3_BUCKET_OUTPUTS, r.s3_loc_key, base_url)
+                writer.writerow([
+                    ts, title, first_name, surname, dob,
+                    email, phone,
+                    res1, res2, res3, postcode,
+                    defendant, analysis_status, case_status,
+                    report_url, assessment_url, loc_url,
+                ])
+        else:
+            # No LOCs — single summary row
+            case_status = "No Viable Defendant" if all_blocked else "No Viable Claim"
             writer.writerow([
                 ts, title, first_name, surname, dob,
                 email, phone,
                 res1, res2, res3, postcode,
-                defendant, analysis_status, case_status,
-                report_url, assessment_url, loc_url,
+                "", "", case_status,
+                report_url, assessment_url, "",
             ])
 
     buf.seek(0)

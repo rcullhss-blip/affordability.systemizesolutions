@@ -1,9 +1,16 @@
 """
 Converts raw extracted text into the standard internal JSON schema.
-Supports BoshhhFintech HTML-exported PDF format with generic fallback.
+Supports:
+  - BoshhhFintech HTML-exported PDF format
+  - Equifax / TransUnion JSON partner-post format (via json_normaliser)
+  - Generic fallback
 """
+import json as _json
 import re
 from datetime import date, datetime
+
+# Sentinel set by router.py when raw bytes are a JSON partner-post
+_JSON_PARTNER_POST_PREFIX = "__JSON_PARTNER_POST__:"
 
 
 # ── Format detection ───────────────────────────────────────────────────────
@@ -43,8 +50,17 @@ _FINANCIAL_TYPES = {"CREDIT_CARD", "PERSONAL_LOAN", "HIRE_PURCHASE", "HOME_CREDI
 
 
 def normalise_to_schema(raw_text: str) -> dict:
+    # ── JSON partner-post (Equifax / TransUnion) ───────────────────────────
+    if raw_text.startswith(_JSON_PARTNER_POST_PREFIX):
+        from app.parsers.json_normaliser import normalise_json_payload
+        json_str = raw_text[len(_JSON_PARTNER_POST_PREFIX):]
+        data = _json.loads(json_str)
+        return normalise_json_payload(data)
+
+    # ── BoshhhFintech PDF/HTML ─────────────────────────────────────────────
     if _BOSHHH_MARKER.search(raw_text):
         return _parse_boshhhfintech(raw_text)
+
     return _parse_generic(raw_text)
 
 
@@ -63,11 +79,21 @@ def _parse_boshhhfintech(text: str) -> dict:
 
 
 def _boshhh_client(text: str) -> dict:
-    # Name from HTML header: "5/13/26, 11:35 PM  LOUISE DUTTON Credit File"
     name = ""
-    m = re.search(r'(?:AM|PM)\s+([A-Z][A-Z\s\-\']+[A-Z])\s+Credit File', text)
-    if m:
-        name = m.group(1).strip()
+    # Format 1: HTML — name is first non-empty line (e.g. "ALAN ROBSON\nDate issued:")
+    first_line = text.strip().split('\n')[0].strip()
+    if re.match(r'^[A-Z][A-Z\s\-\']{2,}[A-Z]$', first_line) and len(first_line.split()) >= 2:
+        name = first_line
+    # Format 2: PDF print header — "5/13/26, 11:35 PM  LOUISE DUTTON Credit File"
+    if not name:
+        m = re.search(r'(?:AM|PM)\s+([A-Z][A-Z\s\-\']+[A-Z])\s+Credit File', text)
+        if m:
+            name = m.group(1).strip()
+    # Format 3: <title> tag survived extraction
+    if not name:
+        m = re.search(r'([A-Z][A-Z\s\-\']+[A-Z])\s+Credit File', text)
+        if m:
+            name = m.group(1).strip()
 
     # Address: lines between "Supplied Address 1" and next section header
     address = ""

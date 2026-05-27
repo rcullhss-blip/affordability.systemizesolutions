@@ -12,6 +12,7 @@ celery_app = Celery(
         "app.workers.analyse",
         "app.workers.document",
         "app.workers.deliver",
+        "app.workers.watchdog",
     ],
 )
 
@@ -31,5 +32,12 @@ celery_app.conf.update(
         "app.workers.analyse.*": {"queue": "analyse"},
         "app.workers.document.*": {"queue": "document"},
         "app.workers.deliver.*": {"queue": "deliver"},
+        "app.workers.watchdog.*": {"queue": "watchdog"},
+    },
+    beat_schedule={
+        "watchdog-every-5-minutes": {
+            "task": "app.workers.watchdog.rescue_stuck_jobs",
+            "schedule": 300.0,  # every 5 minutes
+        },
     },
 )

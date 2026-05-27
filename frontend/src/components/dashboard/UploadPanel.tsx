@@ -7,13 +7,13 @@ type Mode = "file" | "zip" | "csv";
 const MODE_CONFIG: Record<Mode, { label: string; accept: string; hint: string }> = {
   file: {
     label: "Single Report",
-    accept: ".pdf,.html,.htm,.docx,.xlsx",
-    hint: "PDF, HTML, DOCX, or XLSX credit report",
+    accept: ".pdf,.html,.htm,.docx,.xlsx,.json",
+    hint: "PDF, HTML, DOCX, XLSX or JSON credit report (Equifax / TransUnion bureau feed)",
   },
   zip: {
     label: "ZIP of Reports",
     accept: ".zip",
-    hint: "ZIP containing multiple credit reports — one job per file",
+    hint: "ZIP containing multiple credit reports — one job per file (PDF, HTML, JSON)",
   },
   csv: {
     label: "CSV of URLs",
