@@ -18,6 +18,10 @@ from reportlab.platypus import (
 from reportlab.platypus.frames import Frame
 from reportlab.platypus.doctemplate import PageTemplate, BaseDocTemplate
 
+# V2 (sandbox) — estimated claim value per lender. Gated behind an env flag;
+# stays dormant on the live V1 stack. See analysis/claim_value.py.
+from app.analysis import claim_value
+
 # ── Palette ──────────────────────────────────────────────────────────────────
 C_PAGE      = colors.HexColor("#F1F5F9")   # very light slate page bg
 C_NAVY      = colors.HexColor("#0F172A")   # navy — cover, header bar
@@ -569,6 +573,21 @@ def _lender_card(result, accounts):
            textColor=C_BODY, leading=13),
     ))
 
+    # V2 (sandbox) — estimated indicative redress for this lender.
+    if claim_value.is_enabled():
+        est = claim_value.estimate_for_account(acc)
+        if est:
+            items.append(Paragraph(
+                f'<font color="#0F766E"><b>Estimated indicative redress: '
+                f'{_fmt_money(est["estimated_redress"])}</b></font>'
+                f'<font color="#94A3B8">  ·  based on assumed '
+                f'{est["assumed_apr"] * 100:.0f}% APR for {_fmt_type(est["account_type"])} '
+                f'over ~{est["months_active"]} months · estimate only, subject to '
+                f'solicitor review</font>',
+                _S("cv", fontName="Helvetica", fontSize=7.5, leading=11,
+                   backColor=colors.HexColor("#F0FDFA")),
+            ))
+
     # Flag lines (skip debt purchaser — already shown as banner)
     for f in flags:
         if isinstance(f, dict):
@@ -780,6 +799,20 @@ def generate_assessment_pdf(schema: dict, lender_results) -> bytes:
             "Lenders flagged for Manual Review should be verified by the supervising solicitor before LOC is issued.",
             st["body"],
         ))
+        # V2 (sandbox) — total estimated indicative redress across in-scope lenders.
+        if claim_value.is_enabled():
+            total = claim_value.portfolio_total(in_scope, accounts)
+            if total > 0:
+                story.append(Spacer(1, 6))
+                story.append(Paragraph(
+                    f'<font color="#0F766E"><b>Total estimated indicative claim value: '
+                    f'{_fmt_money(total)}</b></font>'
+                    f'<font color="#94A3B8">  —  modelled from assumed representative APRs '
+                    f'by product type (credit files do not contain APR). Indicative triage '
+                    f'figure only; not a calculation of entitlement and subject to solicitor '
+                    f'review.</font>',
+                    st["body"],
+                ))
         story.append(Spacer(1, 10))
         for r in in_scope:
             story.append(_lender_card(r, accounts))
