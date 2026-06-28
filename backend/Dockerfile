@@ -13,7 +13,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-RUN chmod +x start_api.sh start_worker.sh
+RUN chmod +x start.sh start_api.sh start_worker.sh
 
-# Default: run the API. Override CMD in Railway worker service.
-CMD ["./start_api.sh"]
+# Default: dispatcher picks API or worker via SERVICE_ROLE (see start.sh).
+CMD ["./start.sh"]

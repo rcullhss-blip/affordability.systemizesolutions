@@ -3,8 +3,9 @@ builder = "DOCKERFILE"
 dockerfilePath = "Dockerfile"
 
 [deploy]
-startCommand = "./start_api.sh"
-healthcheckPath = "/health"
-healthcheckTimeout = 30
+# ./start.sh dispatches to the API or the Celery worker based on SERVICE_ROLE,
+# so the API and worker services can share this one config. No healthcheck here
+# because the worker serves no HTTP (the API's /health still works regardless).
+startCommand = "./start.sh"
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 3
