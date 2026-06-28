@@ -12,6 +12,8 @@ from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
 
 from app.analysis.lender_classifier import classify_lender, get_loc_argument, is_possible_intermediary
+# V2 (sandbox) — estimated indicative claim value. Flag-gated; dormant on V1.
+from app.analysis import claim_value
 
 # First Legal Solicitors firm details
 FIRM_NAME    = "First Legal Solicitors"
@@ -1109,6 +1111,20 @@ def generate_loc_docx(schema: dict, lender_result, review_warnings: list[str] | 
     ]
     for num, text in remedies_28:
         _numbered_item(doc, num, text)
+
+    # V2 (sandbox) — estimated indicative quantum for this lender. Flag-gated.
+    if claim_value.is_enabled():
+        est = claim_value.estimate_for_account(lender_acc)
+        if est:
+            _numbered_item(doc, "28.5",
+                f"For the purpose of early resolution, and based on the information presently "
+                f"available from our Client's credit file, our Client's claim against you is "
+                f"estimated to be in the region of £{est['estimated_redress']:,.0f}. This indicative "
+                f"figure reflects the interest and charges likely paid under the Agreement, together "
+                f"with statutory interest, modelled on a representative APR for this type of facility. "
+                f"It is an estimate for settlement purposes only, is subject to verification against "
+                f"your disclosure, and does not limit the sums our Client may be entitled to recover.",
+                indent=True)
 
     doc.add_paragraph()
 
