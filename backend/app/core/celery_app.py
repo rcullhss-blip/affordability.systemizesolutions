@@ -7,6 +7,7 @@ celery_app = Celery(
     backend=settings.REDIS_URL,
     include=[
         "app.workers.fetch",
+        "app.workers.intake",
         "app.workers.extract",
         "app.workers.parse",
         "app.workers.analyse",
@@ -26,7 +27,8 @@ celery_app.conf.update(
     task_acks_late=True,
     worker_prefetch_multiplier=1,
     task_routes={
-        "app.workers.fetch.*": {"queue": "fetch"},
+        "app.workers.fetch.*":   {"queue": "fetch"},
+        "app.workers.intake.*":  {"queue": "fetch"},
         "app.workers.extract.*": {"queue": "extract"},
         "app.workers.parse.*": {"queue": "parse"},
         "app.workers.analyse.*": {"queue": "analyse"},

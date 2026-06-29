@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     ANTHROPIC_API_KEY: str = ""
     ENVIRONMENT: str = "development"
     LOCAL_STORAGE_PATH: str = "/tmp/systemize-storage"
+    PROCLAIM_WEBHOOK_API_KEY: str = ""  # Set in env to secure the /webhook/bureau endpoints
 
     @property
     def use_local_storage(self) -> bool:
