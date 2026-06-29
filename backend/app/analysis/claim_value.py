@@ -184,6 +184,8 @@ def estimate_for_account(acc: dict) -> dict | None:
     total = interest + statutory
 
     total_rounded = int(round(total / 50.0) * 50)
+    if total_rounded <= 0:
+        return None  # negligible — show nothing rather than a misleading "£0"
 
     return {
         "estimated_redress": total_rounded,
