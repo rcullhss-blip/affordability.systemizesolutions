@@ -577,12 +577,15 @@ def _lender_card(result, accounts):
     if claim_value.is_enabled():
         est = claim_value.estimate_for_account(acc)
         if est:
+            if est.get("assumed_apr"):
+                basis = (f'based on assumed {est["assumed_apr"] * 100:.1f}% APR for '
+                         f'{_fmt_type(est["account_type"])} over ~{est["months_active"]} months')
+            else:
+                basis = ('high-cost short-term credit — capped at the FCA total-cost limit')
             items.append(Paragraph(
                 f'<font color="#0F766E"><b>Estimated indicative redress: '
                 f'{_fmt_money(est["estimated_redress"])}</b></font>'
-                f'<font color="#94A3B8">  ·  based on assumed '
-                f'{est["assumed_apr"] * 100:.0f}% APR for {_fmt_type(est["account_type"])} '
-                f'over ~{est["months_active"]} months · estimate only, subject to '
+                f'<font color="#94A3B8">  ·  {basis} · estimate only, subject to '
                 f'solicitor review</font>',
                 _S("cv", fontName="Helvetica", fontSize=7.5, leading=11,
                    backColor=colors.HexColor("#F0FDFA")),
