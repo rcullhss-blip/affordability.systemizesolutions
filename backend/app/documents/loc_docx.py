@@ -37,7 +37,7 @@ FIRM_CONFIGS = {
         "name":    "Barings Law",
         "address": "Cardinal House, 8th Floor, 20 St Mary's Parsonage, Manchester, M3 2LY",
         "logo":    os.path.join(_DOC_DIR, "barings-logo.png"),
-        "logo_w":  5.0,  # cm
+        "logo_w":  4.2,  # cm (taller aspect ratio than First Legal's)
         "footer1": ("Please ensure that all correspondence is sent to: Cardinal House, 8th Floor, "
                     "20 St Mary's Parsonage, Manchester, M3 2LY.  Tel: 0161 200 9960.  "
                     "Email: bankingclaims@baringslaw.com"),
