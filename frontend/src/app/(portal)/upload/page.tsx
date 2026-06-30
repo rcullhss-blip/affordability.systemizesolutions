@@ -4,7 +4,22 @@ import { useRef, useState, useCallback } from "react";
 const API = process.env.NEXT_PUBLIC_API_URL || "https://systemize-backend-production.up.railway.app";
 // Instructing firm for this portal — Barings deployment sets NEXT_PUBLIC_FIRM=barings.
 const FIRM = process.env.NEXT_PUBLIC_FIRM || "first_legal";
-const FIRM_LABEL = FIRM === "barings" ? "Barings Law" : "First Legal";
+const FIRM_CONFIG = FIRM === "barings"
+  ? {
+      label:   "Barings Law",
+      logo:    "/barings-logo.png",
+      eyebrow: "Barings Law",
+      footer:  "Barings Ltd · SRA 522572 · Company 07072321",
+      logoStyle: { height: "40px", width: "auto", objectFit: "contain" as const },
+    }
+  : {
+      label:   "First Legal",
+      logo:    "/first-legal-logo.png",
+      eyebrow: "First Legal Solicitors",
+      footer:  "First Legal Solicitors Ltd · SRA 634939 · Company 10381298",
+      logoStyle: { height: "52px", width: "52px", objectFit: "cover" as const, borderRadius: "6px" },
+    };
+const FIRM_LABEL = FIRM_CONFIG.label;
 
 type Stage = "idle" | "uploading" | "processing" | "success" | "error";
 type Mode  = "csv" | "zip" | "json" | "pdf";
@@ -141,7 +156,7 @@ export default function UploadPortalPage() {
         <header className="portal-header">
           <div className="portal-header-left">
             {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src="/first-legal-logo.png" alt="First Legal Solicitors" style={{ height: "52px", width: "52px", objectFit: "cover", borderRadius: "6px" }} />
+            <img src={FIRM_CONFIG.logo} alt={FIRM_CONFIG.label} style={FIRM_CONFIG.logoStyle} />
             <div className="portal-divider" />
             <span className="portal-badge">{FIRM_LABEL} · Secure Upload Portal</span>
           </div>
@@ -159,7 +174,7 @@ export default function UploadPortalPage() {
             <SuccessView result={result} onReset={reset} />
           ) : (
             <>
-              <div className="portal-eyebrow">First Legal Solicitors</div>
+              <div className="portal-eyebrow">{FIRM_CONFIG.eyebrow}</div>
               <h1 className="portal-h1">
                 Upload <span>Credit Report</span> Batch
               </h1>
@@ -298,9 +313,7 @@ export default function UploadPortalPage() {
         {/* Footer */}
         <footer className="portal-footer">
           <p>
-            First Legal Solicitors Ltd &nbsp;·&nbsp; SRA 634939 &nbsp;·&nbsp; Company 10381298
-            <br />
-            8 Princes Parade, Liverpool, L3 1DL
+            {FIRM_CONFIG.footer}
             <br />
             <span style={{ color: "#2a4060" }}>Powered by Systemize Affordability Platform</span>
           </p>
