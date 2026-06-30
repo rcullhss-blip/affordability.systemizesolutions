@@ -62,15 +62,10 @@ export default function JobDetailPage() {
     return () => clearInterval(iv);
   }, [id]);
 
-  async function downloadAssessment() {
+  function downloadAssessment() {
     if (!id) return;
-    setDownloading("assessment");
-    try {
-      const url = await getJobDownloadAssessment(Number(id));
-      window.open(url, "_blank");
-    } catch {
-      alert("Assessment not available yet.");
-    } finally { setDownloading(null); }
+    const url = getJobDownloadAssessment(Number(id));
+    window.open(url, "_blank");
   }
 
   async function downloadAllLocs() {

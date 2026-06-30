@@ -1,7 +1,7 @@
 "use client";
 import { useRef, useState, useCallback } from "react";
 
-const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+const API = process.env.NEXT_PUBLIC_API_URL || "https://systemize-backend-production.up.railway.app";
 
 type Stage = "idle" | "uploading" | "processing" | "success" | "error";
 type Mode  = "csv" | "zip" | "json";

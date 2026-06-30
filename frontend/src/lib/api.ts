@@ -1,6 +1,6 @@
 import axios from "axios";
 
-const BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+const BASE = process.env.NEXT_PUBLIC_API_URL || "https://systemize-backend-production.up.railway.app";
 
 export const api = axios.create({
   baseURL: BASE,
@@ -48,9 +48,9 @@ function absoluteUrl(url: string): string {
   return url.startsWith("/") ? `${BASE}${url}` : url;
 }
 
-export async function getJobDownloadAssessment(id: number): Promise<string> {
-  const { data } = await api.get(`/api/v1/jobs/${id}/download/assessment`);
-  return absoluteUrl(data.url);
+export function getJobDownloadAssessment(id: number): string {
+  // Backend streams the PDF directly — just return the URL for window.open()
+  return `${BASE}/api/v1/jobs/${id}/download/assessment`;
 }
 
 export async function getJobDownloadLocs(id: number) {
