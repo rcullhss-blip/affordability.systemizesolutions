@@ -48,9 +48,10 @@ function absoluteUrl(url: string): string {
   return url.startsWith("/") ? `${BASE}${url}` : url;
 }
 
-export function getJobDownloadAssessment(id: number): string {
-  // Backend streams the PDF directly — just return the URL for window.open()
-  return `${BASE}/api/v1/jobs/${id}/download/assessment`;
+export async function getJobDownloadAssessment(id: number): Promise<string> {
+  // Endpoint returns { url: <presigned S3 url> } — fetch it, then open that URL.
+  const { data } = await api.get(`/api/v1/jobs/${id}/download/assessment`);
+  return absoluteUrl(data.url);
 }
 
 export async function getJobDownloadLocs(id: number) {

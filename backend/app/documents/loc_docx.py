@@ -18,7 +18,7 @@ FIRM_NAME    = "First Legal Solicitors"
 FIRM_ADDRESS = "8 Princes Parade, Liverpool, L3 1DL"
 FIRM_LOGO    = os.path.join(
     os.path.dirname(os.path.abspath(__file__)),
-    "..", "..", "..", "..", "first legal logo.png"
+    "first-legal-logo.png"  # bundled in the backend image so it ships on deploy
 )
 
 FIRM_FOOTER_LINE1 = (

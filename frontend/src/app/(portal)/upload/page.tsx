@@ -4,7 +4,7 @@ import { useRef, useState, useCallback } from "react";
 const API = process.env.NEXT_PUBLIC_API_URL || "https://systemize-backend-production.up.railway.app";
 
 type Stage = "idle" | "uploading" | "processing" | "success" | "error";
-type Mode  = "csv" | "zip" | "json";
+type Mode  = "csv" | "zip" | "json" | "pdf";
 
 const MODE_CONFIG: Record<Mode, { label: string; accept: string; description: string; icon: string }> = {
   csv: {
@@ -24,6 +24,12 @@ const MODE_CONFIG: Record<Mode, { label: string; accept: string; description: st
     accept:      ".json",
     description: "Single Equifax or TransUnion bureau partner-post JSON file",
     icon:        "📄",
+  },
+  pdf: {
+    label:       "Single Report File",
+    accept:      ".pdf,.html,.htm,.docx,.xlsx",
+    description: "One credit report file — PDF, HTML, DOCX or XLSX",
+    icon:        "📑",
   },
 };
 
@@ -69,6 +75,7 @@ export default function UploadPortalPage() {
       csv:  "/api/v1/upload/csv",
       zip:  "/api/v1/upload/zip",
       json: "/api/v1/upload/file",
+      pdf:  "/api/v1/upload/file",
     };
     const endpoint = endpointMap[mode];
 
