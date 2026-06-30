@@ -83,6 +83,10 @@ def generate_documents(self, job_id: int):
         job.status = "GENERATING"
         db.commit()
 
+        # Instructing firm — drives the LOC letterhead/branding.
+        batch = db.get(Batch, job.batch_id) if job.batch_id else None
+        firm = getattr(batch, "firm", None) or "first_legal"
+
         schema = job.normalised_data or {}
         # Merge DB client record into schema so PDF/LOC have the real name, DOB,
         # address and matter_ref — normalised_data.client can be empty for CSV jobs.
@@ -118,7 +122,7 @@ def generate_documents(self, job_id: int):
             if warnings:
                 log.warning("LOC review warnings for %s: %s", result.lender_name, "; ".join(warnings))
             lender_slug = re.sub(r'[^a-z0-9]+', '_', result.lender_name.lower()).strip('_')
-            loc_bytes = generate_loc_docx(schema, result, review_warnings=warnings or None)
+            loc_bytes = generate_loc_docx(schema, result, review_warnings=warnings or None, firm=firm)
             loc_key = f"outputs/{matter_ref}/{client_slug}_loc_{lender_slug}.docx"
             upload_bytes(settings.S3_BUCKET_OUTPUTS, loc_key, loc_bytes,
                          "application/vnd.openxmlformats-officedocument.wordprocessingml.document")

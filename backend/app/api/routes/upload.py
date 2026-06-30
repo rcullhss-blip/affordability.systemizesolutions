@@ -55,6 +55,7 @@ def _detect_format(filename: str) -> str:
 async def upload_file(
     file: UploadFile = File(...),
     batch_name: str = Form(...),
+    firm: str = Form("first_legal"),
     db: Session = Depends(get_db),
 ):
     fmt = _detect_format(file.filename or "")
@@ -63,13 +64,13 @@ async def upload_file(
 
     # If someone sends a CSV to this endpoint, route it to the URL-list handler
     if fmt == ".csv":
-        return await upload_csv(file=file, batch_name=batch_name, db=db)
+        return await upload_csv(file=file, batch_name=batch_name, firm=firm, db=db)
 
     raw_bytes = await file.read()
     s3_key = f"raw/{uuid.uuid4()}/{file.filename}"
     upload_bytes(settings.S3_BUCKET_RAW, s3_key, raw_bytes)
 
-    batch = Batch(name=batch_name, total_reports=1)
+    batch = Batch(name=batch_name, total_reports=1, firm=firm)
     db.add(batch)
     db.flush()
 
@@ -89,6 +90,7 @@ async def upload_file(
 async def upload_zip(
     file: UploadFile = File(...),
     batch_name: str = Form(...),
+    firm: str = Form("first_legal"),
     db: Session = Depends(get_db),
 ):
     """Accept a ZIP of credit report files. Creates one job per supported file inside the ZIP."""
@@ -106,34 +108,36 @@ async def upload_zip(
     ]
 
     if not supported_names:
-        raise HTTPException(status_code=400, detail="No supported files found in ZIP (expected PDF, HTML, DOCX, XLSX)")
+        raise HTTPException(status_code=400, detail="No supported files found in ZIP (expected PDF, HTML, DOCX, XLSX, JSON)")
 
-    batch = Batch(name=batch_name, total_reports=len(supported_names))
+    batch = Batch(name=batch_name, total_reports=len(supported_names), firm=firm)
     db.add(batch)
     db.flush()
 
-    job_ids = []
+    # Create + commit all jobs before enqueuing (avoid the worker racing an
+    # uncommitted job into a stranded PENDING state).
+    jobs = []
     for name in supported_names:
         filename = name.split("/")[-1]
-        file_bytes = zf.read(name)
         s3_key = f"raw/{uuid.uuid4()}/{filename}"
-        upload_bytes(settings.S3_BUCKET_RAW, s3_key, file_bytes)
+        upload_bytes(settings.S3_BUCKET_RAW, s3_key, zf.read(name))
+        jobs.append(Job(batch_id=batch.id, s3_raw_key=s3_key, status="PENDING"))
+    db.add_all(jobs)
+    db.commit()
 
-        job = Job(batch_id=batch.id, s3_raw_key=s3_key, status="PENDING")
-        db.add(job)
-        db.flush()
+    for job in jobs:
         task = fetch_and_process.apply_async(args=[job.id], queue="fetch")
         job.celery_task_id = task.id
-        job_ids.append(job.id)
-
     db.commit()
-    return {"batch_id": batch.id, "jobs_created": len(job_ids), "status": "queued"}
+
+    return {"batch_id": batch.id, "jobs_created": len(jobs), "status": "queued"}
 
 
 @router.post("/csv")
 async def upload_csv(
     file: UploadFile = File(...),
     batch_name: str = Form(...),
+    firm: str = Form("first_legal"),
     db: Session = Depends(get_db),
 ):
     """Accept a CSV of report URLs, create one job per row."""
@@ -145,7 +149,7 @@ async def upload_csv(
     if not urls:
         raise HTTPException(status_code=400, detail="No URLs found in CSV")
 
-    batch = Batch(name=batch_name, total_reports=len(urls))
+    batch = Batch(name=batch_name, total_reports=len(urls), firm=firm)
     db.add(batch)
     db.flush()
 

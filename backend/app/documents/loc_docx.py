@@ -13,23 +13,46 @@ from docx.oxml import OxmlElement
 
 from app.analysis.lender_classifier import classify_lender, get_loc_argument, is_possible_intermediary
 
-# First Legal Solicitors firm details
-FIRM_NAME    = "First Legal Solicitors"
-FIRM_ADDRESS = "8 Princes Parade, Liverpool, L3 1DL"
-FIRM_LOGO    = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)),
-    "first-legal-logo.png"  # bundled in the backend image so it ships on deploy
-)
+# ── Per-firm letterhead / branding ────────────────────────────────────────────
+# Each instructing firm gets its own logo, footer and sign-off. The batch's
+# `firm` tag selects which one is used (default first_legal).
+_DOC_DIR = os.path.dirname(os.path.abspath(__file__))
 
-FIRM_FOOTER_LINE1 = (
-    "Please ensure that all correspondence is sent to our Liverpool Office: "
-    "8 Princes Parade, Liverpool, L3 1DL."
-)
-FIRM_FOOTER_LINE2 = (
-    "First Legal Solicitors Ltd is authorised and regulated by the Solicitors Regulation Authority "
-    "under registration number 634939. Registered in England and Wales with Company Number: "
-    "10381298. Registered Office at 4th Floor, 8 Princes Parade, Liverpool, England, L3 1DL."
-)
+FIRM_CONFIGS = {
+    "first_legal": {
+        "name":    "First Legal Solicitors",
+        "address": "8 Princes Parade, Liverpool, L3 1DL",
+        "logo":    os.path.join(_DOC_DIR, "first-legal-logo.png"),
+        "logo_w":  3.8,  # cm
+        "footer1": ("Please ensure that all correspondence is sent to our Liverpool Office: "
+                    "8 Princes Parade, Liverpool, L3 1DL."),
+        "footer2": ("First Legal Solicitors Ltd is authorised and regulated by the Solicitors "
+                    "Regulation Authority under registration number 634939. Registered in England "
+                    "and Wales with Company Number: 10381298. Registered Office at 4th Floor, "
+                    "8 Princes Parade, Liverpool, England, L3 1DL."),
+        "closing": "Yours faithfully,",
+        "signoff": ["First Legal Solicitors", "8 Princes Parade, Liverpool, L3 1DL"],
+    },
+    "barings": {
+        "name":    "Barings Law",
+        "address": "Cardinal House, 8th Floor, 20 St Mary's Parsonage, Manchester, M3 2LY",
+        "logo":    os.path.join(_DOC_DIR, "barings-logo.png"),
+        "logo_w":  5.0,  # cm
+        "footer1": ("Please ensure that all correspondence is sent to: Cardinal House, 8th Floor, "
+                    "20 St Mary's Parsonage, Manchester, M3 2LY.  Tel: 0161 200 9960.  "
+                    "Email: bankingclaims@baringslaw.com"),
+        "footer2": ("Barings Ltd is authorised and regulated by the Solicitors Regulation Authority "
+                    "under registration number 522572. Registered in England and Wales with Company "
+                    "Number 07072321. Registered Office: 8th Floor, Cardinal House, 20 St Mary's "
+                    "Parsonage, Manchester, M3 2LY."),
+        "closing": "Yours sincerely,",
+        "signoff": ["Barings Law", "Irresponsible Lending Department"],
+    },
+}
+
+
+def get_firm_config(firm: str | None) -> dict:
+    return FIRM_CONFIGS.get((firm or "first_legal").strip().lower(), FIRM_CONFIGS["first_legal"])
 
 # ── Known lender addresses ─────────────────────────────────────────────────
 LENDER_ADDRESSES = {
@@ -629,7 +652,7 @@ def _horizontal_rule(doc):
     return p
 
 
-def _add_footer(doc):
+def _add_footer(doc, cfg):
     for section in doc.sections:
         section.footer_distance = Cm(1.0)
         footer = section.footer
@@ -640,7 +663,7 @@ def _add_footer(doc):
         p1.paragraph_format.space_before = Pt(0)
         p1.paragraph_format.space_after  = Pt(2)
         p1.paragraph_format.line_spacing = 1.0
-        r1 = p1.add_run(FIRM_FOOTER_LINE1)
+        r1 = p1.add_run(cfg["footer1"])
         r1.font.name = "Arial"
         r1.font.size = Pt(7)
         r1.font.color.rgb = RGBColor(0x64, 0x74, 0x8B)
@@ -648,7 +671,7 @@ def _add_footer(doc):
         p2.paragraph_format.space_before = Pt(0)
         p2.paragraph_format.space_after  = Pt(0)
         p2.paragraph_format.line_spacing = 1.0
-        r2 = p2.add_run(FIRM_FOOTER_LINE2)
+        r2 = p2.add_run(cfg["footer2"])
         r2.font.name = "Arial"
         r2.font.size = Pt(7)
         r2.font.color.rgb = RGBColor(0x64, 0x74, 0x8B)
@@ -724,7 +747,9 @@ def _review_notice(doc, warnings: list[str]):
     spacer.paragraph_format.space_after = Pt(6)
 
 
-def generate_loc_docx(schema: dict, lender_result, review_warnings: list[str] | None = None) -> bytes:
+def generate_loc_docx(schema: dict, lender_result, review_warnings: list[str] | None = None,
+                      firm: str | None = None) -> bytes:
+    cfg = get_firm_config(firm)
     lender = (lender_result.lender_name if hasattr(lender_result, "lender_name")
               else lender_result.get("lender_name", "Unknown Lender"))
     flags  = (lender_result.risk_flags if hasattr(lender_result, "risk_flags")
@@ -768,7 +793,7 @@ def generate_loc_docx(schema: dict, lender_result, review_warnings: list[str] | 
         section.bottom_margin = Cm(2.54)
 
     # ── Letterhead — logo left, date right ───────────────────────────────
-    logo_path = os.path.normpath(FIRM_LOGO)
+    logo_path = os.path.normpath(cfg["logo"])
     hdr_table = doc.add_table(rows=1, cols=2)
     hdr_table.style = "Normal Table"
     logo_cell = hdr_table.rows[0].cells[0]
@@ -778,7 +803,7 @@ def generate_loc_docx(schema: dict, lender_result, review_warnings: list[str] | 
         lp.alignment = WD_ALIGN_PARAGRAPH.LEFT
         lp.paragraph_format.space_after = Pt(0)
         lr = lp.add_run()
-        lr.add_picture(logo_path, width=Cm(3.8))
+        lr.add_picture(logo_path, width=Cm(cfg["logo_w"]))
     for cell in hdr_table.rows[0].cells:
         tc = cell._tc
         tcPr = tc.get_or_add_tcPr()
@@ -1181,11 +1206,11 @@ def generate_loc_docx(schema: dict, lender_result, review_warnings: list[str] | 
         indent=True)
 
     # ── Closing ───────────────────────────────────────────────────────────
-    _para(doc, "Yours faithfully,", size=11, space_after=28)
-    _para(doc, FIRM_NAME, bold=True, size=11, space_after=2)
-    _para(doc, FIRM_ADDRESS, size=11, space_after=0)
+    _para(doc, cfg["closing"], size=11, space_after=28)
+    for i, line in enumerate(cfg["signoff"]):
+        _para(doc, line, bold=(i == 0), size=11, space_after=(2 if i == 0 else 0))
 
-    _add_footer(doc)
+    _add_footer(doc, cfg)
 
     buf = io.BytesIO()
     doc.save(buf)

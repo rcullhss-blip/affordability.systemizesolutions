@@ -2,6 +2,9 @@
 import { useRef, useState, useCallback } from "react";
 
 const API = process.env.NEXT_PUBLIC_API_URL || "https://systemize-backend-production.up.railway.app";
+// Instructing firm for this portal — Barings deployment sets NEXT_PUBLIC_FIRM=barings.
+const FIRM = process.env.NEXT_PUBLIC_FIRM || "first_legal";
+const FIRM_LABEL = FIRM === "barings" ? "Barings Law" : "First Legal";
 
 type Stage = "idle" | "uploading" | "processing" | "success" | "error";
 type Mode  = "csv" | "zip" | "json" | "pdf";
@@ -82,6 +85,7 @@ export default function UploadPortalPage() {
     const form = new FormData();
     form.append("file", file);
     form.append("batch_name", batchName.trim());
+    form.append("firm", FIRM);
 
     const xhr = new XMLHttpRequest();
     xhr.open("POST", `${API}${endpoint}`);
@@ -139,7 +143,7 @@ export default function UploadPortalPage() {
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img src="/first-legal-logo.png" alt="First Legal Solicitors" style={{ height: "52px", width: "52px", objectFit: "cover", borderRadius: "6px" }} />
             <div className="portal-divider" />
-            <span className="portal-badge">Secure Upload Portal</span>
+            <span className="portal-badge">{FIRM_LABEL} · Secure Upload Portal</span>
           </div>
           <div className="portal-lock">
             <svg width="13" height="13" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>

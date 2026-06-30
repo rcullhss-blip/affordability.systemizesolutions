@@ -14,6 +14,8 @@ class Batch(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(String(255))
+    # Instructing firm — selects the LOC letterhead/branding (first_legal | barings)
+    firm: Mapped[str] = mapped_column(String(50), default="first_legal", server_default="first_legal")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     total_reports: Mapped[int] = mapped_column(Integer, default=0)
     processed: Mapped[int] = mapped_column(Integer, default=0)
