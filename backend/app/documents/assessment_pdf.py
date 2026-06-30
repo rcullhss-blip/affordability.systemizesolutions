@@ -215,11 +215,16 @@ class RoundedPanel(Flowable):
         return self._aw, self._h
 
     def split(self, aw, ah):
-        # Return [self] so ReportLab moves this panel to the next page rather
-        # than trying to break it mid-render. "Splitting error(n==2)" is raised
-        # when split() returns 2 items in certain layout contexts; returning
-        # [self] avoids that while still allowing page-breaks before the panel.
-        return [self]
+        # split() is only called when the panel doesn't fit the space left in the
+        # current frame. If the whole panel would fit on a fresh page, return []
+        # so ReportLab simply moves it to the next page intact (returning [self]
+        # here loops and raises "Splitting error(n==1)" when little space remains).
+        # Only when the panel is taller than a full page do we flow its inner
+        # items so they can break across pages.
+        full_frame_h = PAGE_H - (MT + HEADER_H) - (MB + FOOTER_H)
+        if self._h <= full_frame_h:
+            return []
+        return list(self._items) if self._items else []
 
     def draw(self):
         canv = self.canv
