@@ -5,7 +5,7 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session, selectinload
-from sqlalchemy import select
+from sqlalchemy import select, func
 from app.core.database import get_db
 from app.core.config import settings
 from app.core.s3 import generate_presigned_url
@@ -169,13 +169,16 @@ def export_tracker_csv(batch_id: int, request: Request, db: Session = Depends(ge
     if not batch:
         raise HTTPException(status_code=404, detail="Batch not found")
 
-    nd = Job.normalised_data  # extract client sub-fields server-side, no blob load
+    # Extract only the client sub-fields we need, server-side — never load the
+    # full normalised_data blob into memory (that was the slowness).
+    def ndp(*keys):
+        return func.jsonb_extract_path_text(Job.normalised_data, *keys)
     job_rows = db.execute(
         select(
             Job.id, Job.created_at, Job.s3_raw_key, Job.s3_assessment_key,
             Client.name, Client.dob, Client.address,
-            nd["client"]["email"].astext, nd["client"]["phone"].astext,
-            nd["client"]["name"].astext, nd["client"]["dob"].astext, nd["client"]["address"].astext,
+            ndp("client", "email"), ndp("client", "phone"),
+            ndp("client", "name"), ndp("client", "dob"), ndp("client", "address"),
         )
         .outerjoin(Client, Client.id == Job.client_id)
         .where(Job.batch_id == batch_id, Job.status == "COMPLETE")
