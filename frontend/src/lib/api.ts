@@ -91,6 +91,11 @@ export async function getLenderAnalytics() {
   return data;
 }
 
+export async function getRiskIndicators() {
+  const { data } = await api.get("/api/v1/analytics/risk-indicators");
+  return data;
+}
+
 // ── Upload ─────────────────────────────────────────────────────────────────
 
 export async function uploadFile(file: File, batchName: string) {
