@@ -14,15 +14,9 @@ def lender_analytics(limit: int = 20, db: Session = Depends(get_db)):
         select(
             LenderResult.lender_name,
             func.count(LenderResult.id).label("total"),
-            func.sum(
-                (LenderResult.traffic_light == "GREEN").cast(int)
-            ).label("green_count"),
-            func.sum(
-                (LenderResult.traffic_light == "AMBER").cast(int)
-            ).label("amber_count"),
-            func.sum(
-                (LenderResult.traffic_light == "RED").cast(int)
-            ).label("red_count"),
+            func.count(LenderResult.id).filter(LenderResult.traffic_light == "GREEN").label("green_count"),
+            func.count(LenderResult.id).filter(LenderResult.traffic_light == "AMBER").label("amber_count"),
+            func.count(LenderResult.id).filter(LenderResult.traffic_light == "RED").label("red_count"),
             func.avg(LenderResult.claim_score).label("avg_score"),
         )
         .group_by(LenderResult.lender_name)
