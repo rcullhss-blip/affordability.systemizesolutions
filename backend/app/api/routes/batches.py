@@ -156,7 +156,7 @@ def _file_url(bucket: str, key: str | None, base_url: str = _FALLBACK_BASE) -> s
     if settings.use_local_storage:
         return f"{base_url}/api/v1/files/{bucket}/{key}"
     try:
-        return generate_presigned_url(bucket, key, expires_in=604800)  # 7 days (AWS max)
+        return generate_presigned_url(bucket, key, expires_in=172800)  # 48 hours
     except Exception:
         return ""
 
