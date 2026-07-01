@@ -10,7 +10,7 @@ from app.core.database import get_db
 from app.core.config import settings
 from app.core.s3 import generate_presigned_url
 from app.core.lender_blocklist import is_blocked
-from app.models.tables import Batch, Job
+from app.models.tables import Batch, Job, Client, LenderResult
 from app.models.enums import JobStatus
 
 _FALLBACK_BASE = "http://localhost:8000"
@@ -156,97 +156,89 @@ def _file_url(bucket: str, key: str | None, base_url: str = _FALLBACK_BASE) -> s
     if settings.use_local_storage:
         return f"{base_url}/api/v1/files/{bucket}/{key}"
     try:
-        return generate_presigned_url(bucket, key, expires_in=86400)
+        return generate_presigned_url(bucket, key, expires_in=604800)  # 7 days (AWS max)
     except Exception:
         return ""
 
 
 @router.get("/{batch_id}/export/tracker")
 def export_tracker_csv(batch_id: int, request: Request, db: Session = Depends(get_db)):
-    """Proclaim-ready tracker CSV — one row per LOC."""
+    """Proclaim-ready tracker CSV — one row per LOC. Streamed, and pulls only the
+    fields it needs (not the full report JSON) so it scales to large batches."""
     batch = db.get(Batch, batch_id)
     if not batch:
         raise HTTPException(status_code=404, detail="Batch not found")
 
-    jobs = db.execute(
-        select(Job)
+    nd = Job.normalised_data  # extract client sub-fields server-side, no blob load
+    job_rows = db.execute(
+        select(
+            Job.id, Job.created_at, Job.s3_raw_key, Job.s3_assessment_key,
+            Client.name, Client.dob, Client.address,
+            nd["client"]["email"].astext, nd["client"]["phone"].astext,
+            nd["client"]["name"].astext, nd["client"]["dob"].astext, nd["client"]["address"].astext,
+        )
+        .outerjoin(Client, Client.id == Job.client_id)
         .where(Job.batch_id == batch_id, Job.status == "COMPLETE")
-        .options(selectinload(Job.client), selectinload(Job.lender_results))
         .order_by(Job.created_at.asc())
-    ).scalars().all()
+    ).all()
 
-    # Derive base URL from the incoming request so file links are accessible externally
+    # Lender results grouped by job (single query, no per-job round-trips)
+    lrs: dict[int, list] = {}
+    for jid, lender, tl, loc_gen, loc_key in db.execute(
+        select(LenderResult.job_id, LenderResult.lender_name, LenderResult.traffic_light,
+               LenderResult.loc_generated, LenderResult.s3_loc_key)
+        .join(Job, Job.id == LenderResult.job_id)
+        .where(Job.batch_id == batch_id, Job.status == "COMPLETE")
+    ).all():
+        lrs.setdefault(jid, []).append((lender, tl, loc_gen, loc_key))
+
     base_url = str(request.base_url).rstrip("/")
+    RAW, OUTB = settings.S3_BUCKET_RAW, settings.S3_BUCKET_OUTPUTS
 
-    buf = io.StringIO()
-    writer = csv.writer(buf)
-    writer.writerow([
-        "Timestamp", "Title", "First Name", "Surname", "Date of Birth",
-        "Email", "Phone",
-        "Residence 1", "Residence 2", "Residence 3", "Postal Code",
-        "Defendant", "Analysis Status", "Case Status",
-        "Credit Report", "Assessment PDF", "Letter of Claim",
-    ])
+    def _line(vals):
+        buf = io.StringIO()
+        csv.writer(buf).writerow(vals)
+        return buf.getvalue()
 
-    for job in jobs:
-        client = job.client
-        schema_client = (job.normalised_data or {}).get("client", {})
-
-        # Timestamp
-        ts = job.created_at.strftime("%d/%m/%Y %H:%M") if job.created_at else ""
-
-        # Name fields — prefer DB client record, fall back to normalised_data
-        raw_name = (client.name if client else "") or schema_client.get("name", "")
-        title, first_name, surname = _split_name(raw_name)
-
-        # DOB
-        dob = (str(client.dob) if client and client.dob else "") or schema_client.get("dob", "")
-
-        # Contact — only in normalised_data (not stored on Client model)
-        email = schema_client.get("email", "")
-        phone = schema_client.get("phone", "")
-
-        # Address
-        raw_addr = (client.address or "" if client else "") or schema_client.get("address", "")
-        res1, res2, res3, postcode = _split_address(raw_addr)
-
-        # Document URLs
-        report_url     = _file_url(settings.S3_BUCKET_RAW,     job.s3_raw_key,     base_url)
-        assessment_url = _file_url(settings.S3_BUCKET_OUTPUTS, job.s3_assessment_key, base_url)
-
-        locs = [r for r in job.lender_results if r.loc_generated and r.s3_loc_key]
-        all_blocked = all(is_blocked(r.lender_name) for r in job.lender_results) if job.lender_results else False
-
-        if locs:
-            # One row per LOC
-            for r in locs:
-                defendant       = r.lender_name
-                analysis_status = _TL_LABELS.get((r.traffic_light or "").upper(), "")
-                case_status     = "LOC Generated"
-                loc_url         = _file_url(settings.S3_BUCKET_OUTPUTS, r.s3_loc_key, base_url)
-                writer.writerow([
-                    ts, title, first_name, surname, dob,
-                    email, phone,
-                    res1, res2, res3, postcode,
-                    defendant, analysis_status, case_status,
-                    report_url, assessment_url, loc_url,
+    def stream():
+        yield _line([
+            "Timestamp", "Title", "First Name", "Surname", "Date of Birth", "Email", "Phone",
+            "Residence 1", "Residence 2", "Residence 3", "Postal Code",
+            "Defendant", "Analysis Status", "Case Status",
+            "Credit Report", "Assessment PDF", "Letter of Claim",
+        ])
+        for (jid, created, raw_key, assess_key, c_name, c_dob, c_addr,
+             email, phone, nd_name, nd_dob, nd_addr) in job_rows:
+            ts = created.strftime("%d/%m/%Y %H:%M") if created else ""
+            title, first_name, surname = _split_name((c_name or "") or (nd_name or ""))
+            dob = (str(c_dob) if c_dob else "") or (nd_dob or "")
+            res1, res2, res3, postcode = _split_address((c_addr or "") or (nd_addr or ""))
+            report_url     = _file_url(RAW, raw_key, base_url)
+            assessment_url = _file_url(OUTB, assess_key, base_url)
+            these = lrs.get(jid, [])
+            locs = [(l, tl, k) for (l, tl, g, k) in these if g and k]
+            if locs:
+                for lender, tl, k in locs:
+                    yield _line([
+                        ts, title, first_name, surname, dob, email or "", phone or "",
+                        res1, res2, res3, postcode,
+                        lender, _TL_LABELS.get((tl or "").upper(), ""), "LOC Generated",
+                        report_url, assessment_url, _file_url(OUTB, k, base_url),
+                    ])
+            else:
+                all_blocked = bool(these) and all(is_blocked(l) for (l, _, _, _) in these)
+                case_status = "No Viable Defendant" if all_blocked else "No Viable Claim"
+                yield _line([
+                    ts, title, first_name, surname, dob, email or "", phone or "",
+                    res1, res2, res3, postcode, "", "", case_status,
+                    report_url, assessment_url, "",
                 ])
-        else:
-            # No LOCs — single summary row
-            case_status = "No Viable Defendant" if all_blocked else "No Viable Claim"
-            writer.writerow([
-                ts, title, first_name, surname, dob,
-                email, phone,
-                res1, res2, res3, postcode,
-                "", "", case_status,
-                report_url, assessment_url, "",
-            ])
 
-    buf.seek(0)
+    firm_slug = (batch.firm or "first_legal")
     batch_slug = re.sub(r'[^a-z0-9]+', '_', (batch.name or str(batch_id)).lower()).strip('_')
-    filename = f"{batch_slug}_first_legal_affordability_assessment.csv"
+    filename = f"{batch_slug}_{firm_slug}_affordability_tracker.csv"
     return StreamingResponse(
-        iter([buf.getvalue()]),
+        stream(),
         media_type="text/csv",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
