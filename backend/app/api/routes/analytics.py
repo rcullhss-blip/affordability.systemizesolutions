@@ -1,10 +1,27 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
-from sqlalchemy import select, func
+from sqlalchemy import select, func, text
 from app.core.database import get_db
 from app.models.tables import LenderResult, Job
 
 router = APIRouter()
+
+
+@router.get("/risk-indicators")
+def risk_indicators(limit: int = 15, db: Session = Depends(get_db)):
+    """Most common affordability indicators driving claims, across all reports."""
+    rows = db.execute(
+        text(
+            "SELECT flag->>'type' AS indicator, count(*) AS n "
+            "FROM lender_results, jsonb_array_elements("
+            "  CASE WHEN jsonb_typeof(risk_flags::jsonb) = 'array' "
+            "       THEN risk_flags::jsonb ELSE '[]'::jsonb END) AS flag "
+            "WHERE flag->>'type' IS NOT NULL "
+            "GROUP BY flag->>'type' ORDER BY n DESC LIMIT :limit"
+        ),
+        {"limit": limit},
+    ).all()
+    return [{"indicator": r.indicator, "count": r.n} for r in rows]
 
 
 @router.get("/lenders")
