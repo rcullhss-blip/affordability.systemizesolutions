@@ -54,7 +54,7 @@ FIRM_CONFIGS = {
         "logo":    os.path.join(_DOC_DIR, "accord-logo.png"),
         "logo_w":  4.6,  # cm (wide horizontal wordmark)
         "footer1": ("Please ensure that all correspondence is sent to: 86-90 Paul Street, "
-                    "London, EC2A 4NE."),
+                    "London, EC2A 4NE.  Email: info@accordsolicitors.co.uk  ·  Web: accordsolicitors.co.uk"),
         "footer2": ("Accord Solicitors is a brand of Accord Associates Solicitors Limited, "
                     "authorised and regulated by the Solicitors Regulation Authority under SRA "
                     "number 8001614. Registered in England and Wales with Company Number 14309081. "
