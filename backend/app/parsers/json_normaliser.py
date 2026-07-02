@@ -46,6 +46,10 @@ def normalise_json_payload(data: dict) -> dict:
     if _is_valid8(data):
         return _normalise_valid8(data)
 
+    # Full Experian/TransUnion bureau report (Woodville — results[].provider)
+    if _is_bureau_results(data):
+        return _normalise_experian_report(data)
+
     raise ValueError(
         f"Unrecognised JSON partner-post format. "
         f"agency={agency!r}, keys={list(data.keys())[:8]}"
@@ -194,6 +198,158 @@ def _normalise_valid8(data: dict) -> dict:
         "risk_flags":   [],
         "credit_score": None,
         "_source":      "VALID8",
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Full Experian / TransUnion bureau report (Woodville — results[].provider)
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Experian CAIS account-type codes → internal type
+_EXP_CODE_MAP = {
+    "00": "CURRENT_ACCOUNT", "01": "CREDIT_CARD", "02": "PERSONAL_LOAN", "03": "HIRE_PURCHASE",
+    "04": "PERSONAL_LOAN", "05": "OTHER", "06": "MORTGAGE", "07": "MAIL_ORDER", "08": "OTHER",
+    "09": "OTHER", "10": "CREDIT_CARD", "16": "OTHER", "17": "OTHER", "19": "HIRE_PURCHASE",
+    "22": "TELECOM", "23": "UTILITY", "26": "PAYDAY_LOAN", "37": "STORE_CARD",
+}
+
+
+def _is_bureau_results(data: dict) -> bool:
+    res = data.get("results")
+    return (isinstance(res, list) and
+            any(isinstance(r, dict) and r.get("provider") in ("Experian", "TransUnion") for r in res))
+
+
+def _find_all(o, key, out):
+    if isinstance(o, dict):
+        for k, v in o.items():
+            if k == key:
+                out.append(v)
+            _find_all(v, key, out)
+    elif isinstance(o, list):
+        for v in o:
+            _find_all(v, key, out)
+    return out
+
+
+def _exp_date(obj) -> str:
+    if not isinstance(obj, dict) or not obj.get("ccyySpecified"):
+        return ""
+    y, m, d = obj.get("ccyy"), obj.get("mm") or 1, obj.get("dd") or 1
+    try:
+        return f"{int(y):04d}-{int(m):02d}-{int(d):02d}"
+    except (TypeError, ValueError):
+        return ""
+
+
+def _exp_type(code: str) -> str:
+    return _EXP_CODE_MAP.get((str(code or "").strip()), "OTHER")
+
+
+def _exp_balance(raw: dict) -> float:
+    bals = raw.get("accountBalances") or []
+    if bals:
+        try:
+            return float(int(bals[0].get("accountBalance", "0")))
+        except (TypeError, ValueError):
+            pass
+    return 0.0
+
+
+def _normalise_experian_report(data: dict) -> dict:
+    results = data.get("results", [])
+    exp = next((r for r in results if isinstance(r, dict) and r.get("provider") == "Experian"), None)
+    if exp is None:
+        raise ValueError("No Experian result in bureau payload")
+
+    # ── Client (applicant + address) ──────────────────────────────────────────
+    apps = _find_all(exp, "applicant", [])
+    app = {}
+    for a in apps:
+        cand = a[0] if isinstance(a, list) and a else a
+        if isinstance(cand, dict) and cand.get("name"):
+            app = cand; break
+    nm = app.get("name", {}) if isinstance(app, dict) else {}
+    name = " ".join(x for x in (nm.get("title"), nm.get("forename"), nm.get("surname")) if x) \
+        or app.get("formattedName", "")
+    dob = app.get("formattedDOB", "") or _exp_date(app.get("dateOfBirth"))
+
+    address = ""
+    for loc in _find_all(exp, "locationDetails", []):
+        cand = loc[0] if isinstance(loc, list) and loc else loc
+        uk = (cand or {}).get("ukLocation") if isinstance(cand, dict) else None
+        if uk:
+            parts = [uk.get("houseNumber"), uk.get("flat"), uk.get("street"), uk.get("district"),
+                     uk.get("postTown"), uk.get("county"), uk.get("postcode")]
+            address = ", ".join(str(p).strip() for p in parts if p and str(p).strip())
+            break
+
+    client = {
+        "name": name.strip(), "dob": dob, "address": address,
+        "email": "", "phone": "",
+        "matter_ref": data.get("clientReference") or exp.get("clientReference") or "",
+    }
+
+    # ── Accounts (CAIS) ──────────────────────────────────────────────────────
+    accounts, defaults = [], []
+    cais_accounts = []
+    for cd in _find_all(exp, "caisDetails", []):
+        if isinstance(cd, list):
+            cais_accounts.extend(x for x in cd if isinstance(x, dict))
+
+    for raw in cais_accounts:
+        lender  = (raw.get("supplyCompanyName") or "Unknown").strip()
+        opened  = _exp_date(raw.get("caisAccStartDate"))
+        settled = _exp_date(raw.get("settlementDate"))
+        last_up = _exp_date(raw.get("lastUpdatedDate"))
+        codes   = (raw.get("accountStatusCodes") or "").strip()
+        acc_status = (raw.get("accountStatus") or "").upper().strip()
+        worst   = (raw.get("worstStatus") or "").upper().strip()
+
+        # payment history: keep month codes, map default marker 8 → D
+        payment_hist = [("D" if c == "8" else c) for c in codes if c not in (" ", "U", "")]
+
+        is_default = ("8" in codes) or ("D" in codes) or acc_status in ("D", "8") or worst in ("8", "D")
+        default_date = None
+        if is_default:
+            idx = next((i for i, c in enumerate(codes) if c in ("8", "D")), None)
+            base = _parse_date(last_up) if last_up else None
+            if idx is not None and base:
+                default_date = str(base - relativedelta(months=idx))
+            else:
+                default_date = settled or opened or None
+
+        balance = _exp_balance(raw)
+        if raw.get("balance", {}).get("narrative") == "S" or (settled and not is_default):
+            status = "SETTLED"
+            balance = 0.0
+        elif is_default:
+            status = "DEFAULT"
+        else:
+            status = "ACTIVE"
+
+        pay = raw.get("payment", "")
+        monthly = None
+        m = re.search(r"([\d,]+)", pay.replace("£", "")) if isinstance(pay, str) else None
+        if m:
+            try: monthly = float(m.group(1).replace(",", ""))
+            except ValueError: pass
+
+        accounts.append({
+            "lender": lender, "account_type": _exp_type(raw.get("accountType")),
+            "account_number": raw.get("accountNumber") or "", "opened_date": opened,
+            "closed_date": settled, "balance": balance, "credit_limit": None,
+            "utilisation_pct": None, "status": status, "default_date": default_date,
+            "default_balance": (balance if is_default else None), "monthly_payment": monthly,
+            "payment_history": payment_hist, "last_updated": last_up,
+        })
+        if is_default:
+            defaults.append({"lender": lender, "status": "DEFAULT",
+                             "amount": balance or 0, "date": default_date})
+
+    return {
+        "client": client, "accounts": accounts, "searches": [], "defaults": defaults,
+        "risk_flags": [], "credit_score": None, "_source": "EXPERIAN_REPORT",
     }
 
 
