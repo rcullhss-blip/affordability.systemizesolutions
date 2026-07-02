@@ -221,7 +221,11 @@ def _is_bureau_results(data: dict) -> bool:
     ):
         return True
     # single-report wrappers (kycResult / result, no results[] array)
-    return bool(_find_all(data, "caisDetails", []) or _find_all(data, "financialAccountInformation", []))
+    if _find_all(data, "caisDetails", []) or _find_all(data, "financialAccountInformation", []):
+        return True
+    # KYC-only bureau responses: wrapper present but no credit-account section.
+    # Treated as a valid (empty) report so the client completes as RED/no-data.
+    return isinstance(data.get("kycResult"), dict) and ("jsonReport" in data or "result" in data)
 
 
 def _find_all(o, key, out):
@@ -507,6 +511,13 @@ def _normalise_bureau_report(data: dict) -> dict:
         return _merge_report_schemas(exp, tu)
     if exp or tu:
         return exp or tu
+    # Bureau wrapper with no credit accounts (KYC-only response). Extract what
+    # client details exist and return an empty report — completes as RED/no-data
+    # rather than showing a misleading FAILED on the dashboard.
+    if isinstance(data.get("kycResult"), dict):
+        schema = _normalise_experian_report(data)  # handles zero accounts fine
+        schema["_source"] = "BUREAU_NO_DATA"
+        return schema
     raise ValueError("Bureau report had no parseable Experian or TransUnion section")
 
 
