@@ -91,11 +91,15 @@ async def upload_files(
     files: List[UploadFile] = File(...),
     batch_name: str = Form(...),
     firm: str = Form("first_legal"),
+    batch_id: Optional[int] = Form(None),
     db: Session = Depends(get_db),
 ):
     """Accept many report files at once (e.g. a dragged-in folder). Creates ONE
     batch with one job per supported file. Returns the received/created counts so
-    the caller can verify nothing was dropped."""
+    the caller can verify nothing was dropped.
+
+    Pass an existing `batch_id` to append these files to that batch — this lets a
+    large folder be uploaded in chunks (e.g. 200 at a time) while staying one batch."""
     received = len(files)
     supported = [
         f for f in files
@@ -107,9 +111,16 @@ async def upload_files(
             detail="No supported report files found (expected JSON, PDF, HTML, DOCX or XLSX)",
         )
 
-    batch = Batch(name=batch_name, total_reports=len(supported), firm=firm)
-    db.add(batch)
-    db.flush()
+    if batch_id is not None:
+        batch = db.get(Batch, batch_id)
+        if not batch:
+            raise HTTPException(status_code=404, detail=f"Batch {batch_id} not found")
+        batch.total_reports = (batch.total_reports or 0) + len(supported)
+        db.flush()
+    else:
+        batch = Batch(name=batch_name, total_reports=len(supported), firm=firm)
+        db.add(batch)
+        db.flush()
 
     # Commit every job before enqueuing so a worker can't race an uncommitted job
     # into a stranded PENDING state — guarantees each file becomes a tracked job.

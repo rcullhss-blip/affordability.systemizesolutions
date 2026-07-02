@@ -48,7 +48,7 @@ def normalise_json_payload(data: dict) -> dict:
 
     # Full Experian/TransUnion bureau report (Woodville — results[].provider)
     if _is_bureau_results(data):
-        return _normalise_experian_report(data)
+        return _normalise_bureau_report(data)
 
     raise ValueError(
         f"Unrecognised JSON partner-post format. "
@@ -216,8 +216,12 @@ _EXP_CODE_MAP = {
 
 def _is_bureau_results(data: dict) -> bool:
     res = data.get("results")
-    return (isinstance(res, list) and
-            any(isinstance(r, dict) and r.get("provider") in ("Experian", "TransUnion") for r in res))
+    if isinstance(res, list) and any(
+        isinstance(r, dict) and r.get("provider") in ("Experian", "TransUnion") for r in res
+    ):
+        return True
+    # single-report wrappers (kycResult / result, no results[] array)
+    return bool(_find_all(data, "caisDetails", []) or _find_all(data, "financialAccountInformation", []))
 
 
 def _find_all(o, key, out):
@@ -257,10 +261,9 @@ def _exp_balance(raw: dict) -> float:
 
 
 def _normalise_experian_report(data: dict) -> dict:
-    results = data.get("results", [])
-    exp = next((r for r in results if isinstance(r, dict) and r.get("provider") == "Experian"), None)
-    if exp is None:
-        raise ValueError("No Experian result in bureau payload")
+    # Works for both the results[]-array wrapper and the kycResult/result wrapper:
+    # we search the whole payload for the Experian CAIS structures.
+    exp = data
 
     # ── Client (applicant + address) ──────────────────────────────────────────
     apps = _find_all(exp, "applicant", [])
@@ -351,6 +354,145 @@ def _normalise_experian_report(data: dict) -> dict:
         "client": client, "accounts": accounts, "searches": [], "defaults": defaults,
         "risk_flags": [], "credit_score": None, "_source": "EXPERIAN_REPORT",
     }
+
+
+# TransUnion (camelCase, nested under jsonReport.report) — Woodville variant
+_TU_CAMEL_CATEGORIES = [
+    ("creditCards", "CREDIT_CARD"), ("personalLoans", "PERSONAL_LOAN"),
+    ("mortgages", "MORTGAGE"), ("otherAccounts", "OTHER"),
+    ("hirePurchase", "HIRE_PURCHASE"), ("mailOrder", "MAIL_ORDER"),
+    ("communications", "TELECOM"), ("closedAccounts", None),
+]
+
+
+def _first(raw: dict, *keys):
+    for k in keys:
+        v = raw.get(k)
+        if v not in (None, ""):
+            return v
+    return None
+
+
+def _tu_account_camel(raw: dict, default_type):
+    if not isinstance(raw, dict):
+        return None
+    lender = _first(raw, "lenderName", "companyName", "supplierName", "name") or "Unknown"
+    acc_type = _V8_TYPE_MAP.get(str(_first(raw, "accountType") or "").lower().strip(),
+                               default_type or "OTHER")
+    balance     = _v8_amount(_first(raw, "balance", "currentBalance", "outstandingBalance"))
+    default_bal = _v8_amount(_first(raw, "defaultBalance", "defaultedBalance"))
+    start_date  = _fmt_date(_first(raw, "accountStartDate", "startDate", "openDate") or "")
+    end_date    = _fmt_date(_first(raw, "accountEndDate", "settlementDate", "closedDate") or "")
+    default_date = _fmt_date(_first(raw, "defaultDate", "defaultedDate") or "")
+    status_raw  = str(_first(raw, "status", "accountStatus", "statusSubjectiveLevel") or "").upper()
+
+    if default_date or (default_bal and default_bal > 0) or status_raw in ("DEFAULT", "DEFAULTED"):
+        status = "DEFAULT"
+    elif status_raw in ("CLOSED", "SETTLED", "SATISFIED") or end_date:
+        status = "SETTLED"
+    else:
+        status = "ACTIVE"
+
+    # payment history: accept a flat status string or a list of month codes
+    ph_raw = _first(raw, "paymentHistory", "statusHistory", "accountStatusHistory")
+    payment_hist = []
+    if isinstance(ph_raw, str):
+        payment_hist = [("D" if c == "8" else c) for c in ph_raw if c not in (" ", "U", "")]
+    elif isinstance(ph_raw, list):
+        for e in ph_raw:
+            v = e.get("status") if isinstance(e, dict) else e
+            if v not in (None, ""):
+                payment_hist.append("D" if str(v) == "8" else str(v))
+
+    return {
+        "lender": lender, "account_type": acc_type,
+        "account_number": str(_first(raw, "accountNumber", "accountRef") or ""),
+        "opened_date": start_date, "closed_date": end_date,
+        "balance": balance if balance is not None else 0.0, "credit_limit": _v8_amount(_first(raw, "creditLimit")),
+        "utilisation_pct": None, "status": status, "default_date": default_date or None,
+        "default_balance": default_bal, "monthly_payment": _v8_amount(_first(raw, "regularPaymentAmount", "monthlyPayment", "payment")),
+        "payment_history": payment_hist, "last_updated": _fmt_date(_first(raw, "updatedDate", "lastUpdated") or ""),
+    }
+
+
+def _normalise_tu_report(tu_result: dict) -> dict:
+    reports = _find_all(tu_result, "report", [])
+    report = next((r for r in reports if isinstance(r, dict) and "financialAccountInformation" in r), {})
+    pi = report.get("personalInformation", {}) or {}
+    client = {
+        "name": pi.get("name", ""), "dob": _fmt_date(pi.get("dateOfBirth", "")),
+        "address": pi.get("currentAddress", ""), "email": "", "phone": "",
+        "matter_ref": tu_result.get("clientReference") or "",
+    }
+    fai = report.get("financialAccountInformation", {}) or {}
+    accounts, defaults = [], []
+    for cat, dtype in _TU_CAMEL_CATEGORIES:
+        for raw in fai.get(cat, []) or []:
+            acc = _tu_account_camel(raw, dtype)
+            if not acc:
+                continue
+            accounts.append(acc)
+            if acc["status"] == "DEFAULT":
+                defaults.append({"lender": acc["lender"], "status": "DEFAULT",
+                                 "amount": acc.get("default_balance") or acc.get("balance") or 0,
+                                 "date": acc.get("default_date")})
+    # public records
+    pub = report.get("publicInformation", {}) or {}
+    for j in pub.get("judgments", []) or []:
+        defaults.append({"lender": "CCJ", "status": "CCJ",
+                         "amount": _v8_amount(_first(j, "amount", "value")) or 0,
+                         "date": _fmt_date(_first(j, "date", "judgmentDate") or "")})
+    for ins in pub.get("insolvencies", []) or []:
+        defaults.append({"lender": "IVA", "status": "INSOLVENCY", "record_type": "Insolvency",
+                         "date": _fmt_date(_first(ins, "date", "startDate") or "")})
+    return {"client": client, "accounts": accounts, "searches": [], "defaults": defaults,
+            "risk_flags": [], "credit_score": None, "_source": "TRANSUNION_REPORT"}
+
+
+def _merge_report_schemas(a: dict, b: dict) -> dict:
+    """Merge two bureau schemas, de-duplicating accounts seen on both bureaus
+    (same lender + open date) and keeping the record that carries more evidence."""
+    def key(acc):
+        return ((acc.get("lender") or "").lower().strip(), acc.get("opened_date") or "")
+    merged: dict = {}
+    for x in a.get("accounts", []) + b.get("accounts", []):
+        k = key(x)
+        existing = merged.get(k)
+        if existing is None or (x.get("status") == "DEFAULT" and existing.get("status") != "DEFAULT"):
+            merged[k] = x
+    client = a.get("client") or {}
+    if not client.get("name"):
+        client = b.get("client") or client
+    return {
+        "client": client,
+        "accounts": list(merged.values()),
+        "searches": (a.get("searches") or []) + (b.get("searches") or []),
+        "defaults": (a.get("defaults") or []) + (b.get("defaults") or []),
+        "risk_flags": (a.get("risk_flags") or []) + (b.get("risk_flags") or []),
+        "credit_score": a.get("credit_score") or b.get("credit_score"),
+        "_source": "EXPERIAN+TRANSUNION",
+    }
+
+
+def _normalise_bureau_report(data: dict) -> dict:
+    results = data.get("results", []) or []
+    exp = tu = None
+    if _find_all(data, "caisDetails", []):
+        try:
+            exp = _normalise_experian_report(data)
+        except Exception:
+            exp = None
+    tu_result = next((r for r in results if isinstance(r, dict) and r.get("provider") == "TransUnion"), None)
+    if tu_result:
+        try:
+            tu = _normalise_tu_report(tu_result)
+        except Exception:
+            tu = None
+    if exp and tu:
+        return _merge_report_schemas(exp, tu)
+    if exp or tu:
+        return exp or tu
+    raise ValueError("Bureau report had no parseable Experian or TransUnion section")
 
 
 # ─────────────────────────────────────────────────────────────────────────────

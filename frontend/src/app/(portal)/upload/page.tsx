@@ -152,6 +152,46 @@ export default function UploadPortalPage() {
     if (folderInputRef.current) folderInputRef.current.value = "";
   }
 
+  // Folder mode: upload in chunks of 200 so a large folder never rides on one
+  // giant request. The first chunk creates the batch; the rest append to it via
+  // batch_id, so everything lands in ONE batch. Counts are aggregated for verify.
+  const submitFolderChunked = async () => {
+    const CHUNK = 200;
+    let batchId: number | null = null;
+    let created = 0;
+    try {
+      for (let i = 0; i < files.length; i += CHUNK) {
+        setStage(i === 0 ? "uploading" : "processing");
+        const chunk = files.slice(i, i + CHUNK);
+        const form = new FormData();
+        chunk.forEach((f) => form.append("files", f));
+        form.append("batch_name", batchName.trim());
+        form.append("firm", FIRM);
+        if (batchId != null) form.append("batch_id", String(batchId));
+
+        const res = await fetch(`${API}/api/v1/upload/files`, {
+          method: "POST",
+          headers: { "bypass-tunnel-reminder": "true" },
+          body: form,
+        });
+        if (!res.ok) {
+          let msg = `Upload failed after ${created} of ${files.length} reports. Please retry.`;
+          try { const j = await res.json(); if (j.detail) msg = j.detail; } catch {}
+          throw new Error(msg);
+        }
+        const data = await res.json();
+        batchId = data.batch_id;
+        created += data.jobs_created || 0;
+        setProgress(Math.round((Math.min(i + CHUNK, files.length) / files.length) * 100));
+      }
+      setResult({ batch_id: batchId as number, jobs_created: created });
+      setStage("success");
+    } catch (e: any) {
+      setErrorMsg(e?.message || "Upload failed. Please try again.");
+      setStage("error");
+    }
+  };
+
   const submit = async () => {
     const isFolder = mode === "folder";
     if (isFolder ? files.length === 0 : !file) return;
@@ -159,6 +199,8 @@ export default function UploadPortalPage() {
     setStage("uploading");
     setProgress(0);
     setErrorMsg("");
+
+    if (isFolder) { await submitFolderChunked(); return; }
 
     // Pick the correct endpoint
     const endpointMap: Record<Mode, string> = {
