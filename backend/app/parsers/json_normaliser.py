@@ -315,10 +315,24 @@ def _normalise_experian_report(data: dict) -> dict:
         is_default = ("8" in codes) or ("D" in codes) or acc_status in ("D", "8") or worst in ("8", "D")
         default_date = None
         if is_default:
-            idx = next((i for i, c in enumerate(codes) if c in ("8", "D")), None)
-            base = _parse_date(last_up) if last_up else None
-            if idx is not None and base:
-                default_date = str(base - relativedelta(months=idx))
+            # accountStatusCodes is most-recent-month-first. The account first
+            # defaulted at the OLDEST month of the current run of 8/D markers.
+            first8 = next((i for i, c in enumerate(codes) if c in ("8", "D")), None)
+            run_end = first8
+            if first8 is not None:
+                j = first8
+                while j + 1 < len(codes) and codes[j + 1] in ("8", "D"):
+                    j += 1
+                run_end = j
+            base = None
+            if last_up:
+                try:
+                    base = datetime.strptime(last_up, "%Y-%m-%d").date()
+                except ValueError:
+                    base = None
+            if run_end is not None and base is not None:
+                from dateutil.relativedelta import relativedelta
+                default_date = str(base - relativedelta(months=run_end))
             else:
                 default_date = settled or opened or None
 
@@ -482,10 +496,11 @@ def _normalise_bureau_report(data: dict) -> dict:
             exp = _normalise_experian_report(data)
         except Exception:
             exp = None
-    tu_result = next((r for r in results if isinstance(r, dict) and r.get("provider") == "TransUnion"), None)
-    if tu_result:
+    # TransUnion — parse from anywhere in the payload (works for both the combined
+    # results[] file and a standalone TransUnion report in the kycResult wrapper).
+    if _find_all(data, "financialAccountInformation", []):
         try:
-            tu = _normalise_tu_report(tu_result)
+            tu = _normalise_tu_report(data)
         except Exception:
             tu = None
     if exp and tu:
