@@ -41,7 +41,10 @@ def _within_limitation(acc: dict) -> bool:
     Still-active accounts (no settled/default date) are always within limitation
     per Smith v RBS [2023] UKSC 34.
     """
-    settled = _parse_date(acc.get("settled_date"))
+    # JSON bureau parsers store the settlement date under closed_date; older
+    # parsers use settled_date. Check both, otherwise settled accounts look
+    # still-active and never fall outside limitation.
+    settled = _parse_date(acc.get("settled_date") or acc.get("closed_date"))
     default = _parse_date(acc.get("default_date"))
     end_date = settled or default
     if not end_date:
