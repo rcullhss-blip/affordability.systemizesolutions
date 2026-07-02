@@ -1,6 +1,6 @@
 from fastapi import APIRouter, UploadFile, File, Form, Depends, HTTPException
 from sqlalchemy.orm import Session
-from typing import Optional
+from typing import Optional, List
 import uuid
 import zipfile
 import io
@@ -84,6 +84,57 @@ async def upload_file(
     db.commit()
 
     return {"job_id": job.id, "batch_id": batch.id, "task_id": task.id, "status": "queued"}
+
+
+@router.post("/files")
+async def upload_files(
+    files: List[UploadFile] = File(...),
+    batch_name: str = Form(...),
+    firm: str = Form("first_legal"),
+    db: Session = Depends(get_db),
+):
+    """Accept many report files at once (e.g. a dragged-in folder). Creates ONE
+    batch with one job per supported file. Returns the received/created counts so
+    the caller can verify nothing was dropped."""
+    received = len(files)
+    supported = [
+        f for f in files
+        if _detect_format((f.filename or "").split("/")[-1]) not in ("unknown", ".csv", ".zip")
+    ]
+    if not supported:
+        raise HTTPException(
+            status_code=400,
+            detail="No supported report files found (expected JSON, PDF, HTML, DOCX or XLSX)",
+        )
+
+    batch = Batch(name=batch_name, total_reports=len(supported), firm=firm)
+    db.add(batch)
+    db.flush()
+
+    # Commit every job before enqueuing so a worker can't race an uncommitted job
+    # into a stranded PENDING state — guarantees each file becomes a tracked job.
+    jobs = []
+    for f in supported:
+        raw = await f.read()
+        filename = (f.filename or "report").split("/")[-1]
+        s3_key = f"raw/{uuid.uuid4()}/{filename}"
+        upload_bytes(settings.S3_BUCKET_RAW, s3_key, raw)
+        jobs.append(Job(batch_id=batch.id, s3_raw_key=s3_key, status="PENDING"))
+    db.add_all(jobs)
+    db.commit()
+
+    for job in jobs:
+        task = fetch_and_process.apply_async(args=[job.id], queue="fetch")
+        job.celery_task_id = task.id
+    db.commit()
+
+    return {
+        "batch_id": batch.id,
+        "received": received,
+        "jobs_created": len(jobs),
+        "skipped": received - len(supported),
+        "status": "queued",
+    }
 
 
 @router.post("/zip")

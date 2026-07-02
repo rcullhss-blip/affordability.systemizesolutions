@@ -32,9 +32,40 @@ const FIRM_CONFIG = FIRM_CONFIGS[FIRM] || FIRM_CONFIGS.first_legal;
 const FIRM_LABEL = FIRM_CONFIG.label;
 
 type Stage = "idle" | "uploading" | "processing" | "success" | "error";
-type Mode  = "csv" | "zip" | "json" | "pdf";
+type Mode  = "folder" | "csv" | "zip" | "json" | "pdf";
+
+const SUPPORTED_EXT = /\.(json|pdf|html?|docx|xlsx)$/i;
+
+// Read a directory reader fully — readEntries only returns a chunk at a time,
+// so it must be called repeatedly until it returns nothing. This is what
+// guarantees no files are missed in large folders.
+async function readAllEntries(reader: any): Promise<any[]> {
+  const all: any[] = [];
+  for (;;) {
+    const batch: any[] = await new Promise((res, rej) => reader.readEntries(res, rej));
+    if (!batch.length) break;
+    all.push(...batch);
+  }
+  return all;
+}
+async function traverseEntry(entry: any, out: File[]): Promise<void> {
+  if (!entry) return;
+  if (entry.isFile) {
+    const f: File = await new Promise((res, rej) => entry.file(res, rej));
+    out.push(f);
+  } else if (entry.isDirectory) {
+    const entries = await readAllEntries(entry.createReader());
+    for (const e of entries) await traverseEntry(e, out);
+  }
+}
 
 const MODE_CONFIG: Record<Mode, { label: string; accept: string; description: string; icon: string }> = {
+  folder: {
+    label:       "Folder of Reports",
+    accept:      ".json,.pdf,.html,.htm,.docx,.xlsx",
+    description: "Drag in a whole folder of JSON reports — one job per file, all in one batch",
+    icon:        "🗂️",
+  },
   csv: {
     label:       "CSV of URLs",
     accept:      ".csv",
@@ -63,52 +94,88 @@ const MODE_CONFIG: Record<Mode, { label: string; accept: string; description: st
 
 export default function UploadPortalPage() {
   const [stage, setStage]         = useState<Stage>("idle");
-  const [mode, setMode]           = useState<Mode>("csv");
+  const [mode, setMode]           = useState<Mode>("folder");
   const [batchName, setBatchName] = useState("");
   const [file, setFile]           = useState<File | null>(null);
+  const [files, setFiles]         = useState<File[]>([]);
   const [dragging, setDragging]   = useState(false);
   const [progress, setProgress]   = useState(0);
   const [errorMsg, setErrorMsg]   = useState("");
   const [result, setResult]       = useState<{ batch_id: number; jobs_created: number } | null>(null);
   const fileInputRef              = useRef<HTMLInputElement>(null);
+  const folderInputRef            = useRef<HTMLInputElement>(null);
 
   const acceptFile = (f: File) => {
     setFile(f);
     if (!batchName) setBatchName(f.name.replace(/\.[^.]+$/, "").replace(/[_-]/g, " "));
   };
 
+  const acceptFiles = (fs: File[]) => {
+    const supported = fs.filter((f) => SUPPORTED_EXT.test(f.name));
+    setFiles(supported);
+    if (!batchName && supported.length) setBatchName(`Batch — ${supported.length} reports`);
+  };
+
   const onDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     setDragging(false);
+    if (mode === "folder") {
+      // Grab the directory entries synchronously — the DataTransfer is emptied
+      // once this handler returns, so we cannot await before reading it.
+      const items = e.dataTransfer.items ? Array.from(e.dataTransfer.items) : [];
+      const entries = items
+        .map((it: any) => (it.webkitGetAsEntry ? it.webkitGetAsEntry() : null))
+        .filter(Boolean);
+      const flat = Array.from(e.dataTransfer.files);
+      (async () => {
+        const out: File[] = [];
+        if (entries.length) {
+          for (const en of entries) await traverseEntry(en, out);
+        } else {
+          out.push(...flat);
+        }
+        acceptFiles(out);
+      })();
+      return;
+    }
     const f = e.dataTransfer.files[0];
     if (f) acceptFile(f);
-  }, [batchName]);
+  }, [batchName, mode]);
 
   function handleModeChange(m: Mode) {
     setMode(m);
     setFile(null);
+    setFiles([]);
     setStage("idle");
     setErrorMsg("");
     if (fileInputRef.current) fileInputRef.current.value = "";
+    if (folderInputRef.current) folderInputRef.current.value = "";
   }
 
   const submit = async () => {
-    if (!file || !batchName.trim()) return;
+    const isFolder = mode === "folder";
+    if (isFolder ? files.length === 0 : !file) return;
+    if (!batchName.trim()) return;
     setStage("uploading");
     setProgress(0);
     setErrorMsg("");
 
     // Pick the correct endpoint
     const endpointMap: Record<Mode, string> = {
-      csv:  "/api/v1/upload/csv",
-      zip:  "/api/v1/upload/zip",
-      json: "/api/v1/upload/file",
-      pdf:  "/api/v1/upload/file",
+      folder: "/api/v1/upload/files",
+      csv:    "/api/v1/upload/csv",
+      zip:    "/api/v1/upload/zip",
+      json:   "/api/v1/upload/file",
+      pdf:    "/api/v1/upload/file",
     };
     const endpoint = endpointMap[mode];
 
     const form = new FormData();
-    form.append("file", file);
+    if (isFolder) {
+      files.forEach((f) => form.append("files", f));
+    } else if (file) {
+      form.append("file", file);
+    }
     form.append("batch_name", batchName.trim());
     form.append("firm", FIRM);
 
@@ -151,6 +218,7 @@ export default function UploadPortalPage() {
   const reset = () => {
     setStage("idle");
     setFile(null);
+    setFiles([]);
     setBatchName("");
     setProgress(0);
     setErrorMsg("");
@@ -236,11 +304,11 @@ export default function UploadPortalPage() {
                 </div>
 
                 <div
-                  className={`drop-zone${dragging ? " drag" : ""}${file ? " has-file" : ""}`}
+                  className={`drop-zone${dragging ? " drag" : ""}${(file || files.length) ? " has-file" : ""}`}
                   onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
                   onDragLeave={() => setDragging(false)}
                   onDrop={onDrop}
-                  onClick={() => fileInputRef.current?.click()}
+                  onClick={() => (mode === "folder" ? folderInputRef.current?.click() : fileInputRef.current?.click())}
                 >
                   <input
                     ref={fileInputRef}
@@ -249,19 +317,49 @@ export default function UploadPortalPage() {
                     style={{ display: "none" }}
                     onChange={(e) => { const f = e.target.files?.[0]; if (f) acceptFile(f); }}
                   />
-                  <span className="drop-icon">{file ? cfg.icon : "📁"}</span>
-                  {file ? (
+                  <input
+                    ref={folderInputRef}
+                    type="file"
+                    multiple
+                    // @ts-expect-error non-standard directory picker attributes
+                    webkitdirectory=""
+                    directory=""
+                    style={{ display: "none" }}
+                    onChange={(e) => acceptFiles(Array.from(e.target.files || []))}
+                  />
+                  {mode === "folder" ? (
                     <>
-                      <h3>{file.name}</h3>
-                      <p>{(file.size / 1024).toFixed(1)} KB — click to change</p>
+                      <span className="drop-icon">{files.length ? "🗂️" : "📁"}</span>
+                      {files.length ? (
+                        <>
+                          <h3>{files.length} report{files.length === 1 ? "" : "s"} ready</h3>
+                          <p>every file becomes one job — click to choose a different folder</p>
+                          <div className="file-pill mono">✓ &nbsp;{files.length} files detected</div>
+                        </>
+                      ) : (
+                        <>
+                          <h3>Drop your folder of reports here</h3>
+                          <p>{cfg.description} — or click to choose a folder</p>
+                        </>
+                      )}
                     </>
                   ) : (
                     <>
-                      <h3>Drop your {cfg.label} here</h3>
-                      <p>{cfg.description} — or click to browse</p>
+                      <span className="drop-icon">{file ? cfg.icon : "📁"}</span>
+                      {file ? (
+                        <>
+                          <h3>{file.name}</h3>
+                          <p>{(file.size / 1024).toFixed(1)} KB — click to change</p>
+                        </>
+                      ) : (
+                        <>
+                          <h3>Drop your {cfg.label} here</h3>
+                          <p>{cfg.description} — or click to browse</p>
+                        </>
+                      )}
+                      {file && <div className="file-pill mono">✓ &nbsp;{file.name}</div>}
                     </>
                   )}
-                  {file && <div className="file-pill mono">✓ &nbsp;{file.name}</div>}
                 </div>
 
                 {(stage === "uploading" || stage === "processing") && (
@@ -295,9 +393,10 @@ export default function UploadPortalPage() {
                 <button
                   className="submit-btn"
                   onClick={submit}
-                  disabled={!file || !batchName.trim() || stage === "uploading" || stage === "processing"}
+                  disabled={(mode === "folder" ? files.length === 0 : !file) || !batchName.trim() || stage === "uploading" || stage === "processing"}
                 >
-                  {stage === "uploading" ? "Uploading…" : stage === "processing" ? "Please wait…" : "Submit Batch →"}
+                  {stage === "uploading" ? "Uploading…" : stage === "processing" ? "Please wait…"
+                    : mode === "folder" && files.length ? `Submit ${files.length} Reports →` : "Submit Batch →"}
                 </button>
               </div>
 
