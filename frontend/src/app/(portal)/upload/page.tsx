@@ -2,23 +2,33 @@
 import { useRef, useState, useCallback } from "react";
 
 const API = process.env.NEXT_PUBLIC_API_URL || "https://systemize-backend-production.up.railway.app";
-// Instructing firm for this portal — Barings deployment sets NEXT_PUBLIC_FIRM=barings.
+// Instructing firm for this portal — each firm's deployment sets NEXT_PUBLIC_FIRM
+// (e.g. barings, accord). Default is first_legal.
 const FIRM = process.env.NEXT_PUBLIC_FIRM || "first_legal";
-const FIRM_CONFIG = FIRM === "barings"
-  ? {
-      label:   "Barings Law",
-      logo:    "/barings-logo.png",
-      eyebrow: "Barings Law",
-      footer:  "Barings Ltd · SRA 522572 · Company 07072321",
-      logoStyle: { height: "40px", width: "auto", objectFit: "contain" as const },
-    }
-  : {
-      label:   "First Legal",
-      logo:    "/first-legal-logo.png",
-      eyebrow: "First Legal Solicitors",
-      footer:  "First Legal Solicitors Ltd · SRA 634939 · Company 10381298",
-      logoStyle: { height: "52px", width: "52px", objectFit: "cover" as const, borderRadius: "6px" },
-    };
+const FIRM_CONFIGS: Record<string, any> = {
+  barings: {
+    label:   "Barings Law",
+    logo:    "/barings-logo.png",
+    eyebrow: "Barings Law",
+    footer:  "Barings Ltd · SRA 522572 · Company 07072321",
+    logoStyle: { height: "40px", width: "auto", objectFit: "contain" as const },
+  },
+  accord: {
+    label:   "Accord Solicitors",
+    logo:    "/accord-logo.png",
+    eyebrow: "Accord Solicitors",
+    footer:  "Accord Associates Solicitors Limited · SRA 8001614 · Company 14309081",
+    logoStyle: { height: "46px", width: "auto", objectFit: "contain" as const },
+  },
+  first_legal: {
+    label:   "First Legal",
+    logo:    "/first-legal-logo.png",
+    eyebrow: "First Legal Solicitors",
+    footer:  "First Legal Solicitors Ltd · SRA 634939 · Company 10381298",
+    logoStyle: { height: "52px", width: "52px", objectFit: "cover" as const, borderRadius: "6px" },
+  },
+};
+const FIRM_CONFIG = FIRM_CONFIGS[FIRM] || FIRM_CONFIGS.first_legal;
 const FIRM_LABEL = FIRM_CONFIG.label;
 
 type Stage = "idle" | "uploading" | "processing" | "success" | "error";

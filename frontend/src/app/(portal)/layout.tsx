@@ -2,7 +2,9 @@ import type { Metadata } from "next";
 import "./portal.css";
 
 const FIRM = process.env.NEXT_PUBLIC_FIRM || "first_legal";
-const FIRM_NAME = FIRM === "barings" ? "Barings Law" : "First Legal Solicitors";
+const FIRM_NAME = FIRM === "barings" ? "Barings Law"
+  : FIRM === "accord" ? "Accord Solicitors"
+  : "First Legal Solicitors";
 
 export const metadata: Metadata = {
   title: `${FIRM_NAME} — Secure Document Upload`,
