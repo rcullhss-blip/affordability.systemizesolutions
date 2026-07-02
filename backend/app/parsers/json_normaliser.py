@@ -42,6 +42,10 @@ def normalise_json_payload(data: dict) -> dict:
         tu = _normalise_transunion(data["transunion"])
         return _merge_bureau_schemas(eq, tu)
 
+    # Valid8 / TSL multi-bureau partner payload (Woodville)
+    if _is_valid8(data):
+        return _normalise_valid8(data)
+
     raise ValueError(
         f"Unrecognised JSON partner-post format. "
         f"agency={agency!r}, keys={list(data.keys())[:8]}"
@@ -83,6 +87,114 @@ def _is_equifax(data: dict) -> bool:
     if not isinstance(inner, dict):
         return False
     return "soleSearch" in inner or "nonAddressSpecificData" in inner
+
+
+def _is_valid8(data: dict) -> bool:
+    """Valid8 / TSL multi-bureau payload — has an all_accounts list and a request block."""
+    return isinstance(data.get("all_accounts"), list) and isinstance(data.get("request"), dict)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Valid8 / TSL multi-bureau normaliser (Woodville)
+# ─────────────────────────────────────────────────────────────────────────────
+
+_V8_TYPE_MAP = {
+    "personal_loan": "PERSONAL_LOAN", "unsecured_loan": "PERSONAL_LOAN", "loan": "PERSONAL_LOAN",
+    "fixed_term_loan": "PERSONAL_LOAN", "guarantor_loan": "PERSONAL_LOAN",
+    "credit_card": "CREDIT_CARD", "charge_card": "CREDIT_CARD", "store_card": "STORE_CARD",
+    "hire_purchase": "HIRE_PURCHASE", "conditional_sale": "HIRE_PURCHASE", "motor_finance": "HIRE_PURCHASE",
+    "mail_order": "MAIL_ORDER", "catalogue": "MAIL_ORDER", "home_credit": "HOME_CREDIT",
+    "payday": "PAYDAY_LOAN", "payday_loan": "PAYDAY_LOAN", "short_term_loan": "PAYDAY_LOAN",
+    "hcstc": "PAYDAY_LOAN", "current_account": "CURRENT_ACCOUNT", "bank_account": "CURRENT_ACCOUNT",
+    "overdraft": "OVERDRAFT", "mortgage": "MORTGAGE", "communications": "TELECOM",
+    "telecom": "TELECOM", "utility": "UTILITY", "other": "OTHER",
+}
+
+# account_status values (and CAIS status codes) that indicate adverse / default
+_V8_DEFAULT_STATUSES = {"default", "defaulted", "delinquent", "in_arrears", "arrears",
+                        "debt_management", "gone_away"}
+_V8_DEFAULT_CODES = {"D", "8"}  # CAIS: 8 = default, D = default
+
+
+def _v8_type(t: str) -> str:
+    return _V8_TYPE_MAP.get((t or "").lower().strip(), "OTHER")
+
+
+def _v8_amount(v):
+    try:
+        return float(v) if v not in (None, "", "null") else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _normalise_valid8(data: dict) -> dict:
+    req = data.get("request", {}) or {}
+    pd  = req.get("personal_details", {}) or {}
+    ad  = req.get("current_address", {}) or {}
+
+    name = " ".join(
+        str(x).strip() for x in
+        (pd.get("title"), pd.get("first_name"), pd.get("middle_name"), pd.get("last_name"))
+        if x and str(x).strip()
+    )
+    addr_parts = [ad.get("building_number"), ad.get("building_name"), ad.get("sub_building_name"),
+                  ad.get("flat"), ad.get("line1"), ad.get("line2"), ad.get("street"),
+                  ad.get("post_town"), ad.get("county"), ad.get("postcode")]
+    address = ", ".join(str(p).strip() for p in addr_parts if p and str(p).strip())
+
+    client = {
+        "name":       name,
+        "dob":        pd.get("date_of_birth") or "",
+        "address":    address,
+        "email":      pd.get("email") or "",
+        "phone":      pd.get("mobile_number") or pd.get("landline_number") or "",
+        "matter_ref": data.get("client_reference") or data.get("provider_reference") or "",
+    }
+
+    accounts, defaults = [], []
+    for a in data.get("all_accounts", []) or []:
+        status_raw = (a.get("account_status") or "").lower().strip()
+        code       = (a.get("account_status_code") or "").upper().strip()
+        is_default = status_raw in _V8_DEFAULT_STATUSES or code in _V8_DEFAULT_CODES
+        status = "SETTLED" if status_raw == "settled" else ("DEFAULT" if is_default else "ACTIVE")
+
+        lender  = a.get("lender_name_credit") or a.get("lender_name_frontend") or "Unknown"
+        opened  = a.get("account_start_date") or ""
+        settled = a.get("account_settlement_date") or ""
+        bal     = _v8_amount(a.get("current_balance"))
+        # Valid8 gives no explicit default date; use settlement date as a proxy when defaulted
+        default_date = (a.get("account_default_date") or (settled if is_default else None)) or None
+        default_balance = bal if is_default else None
+
+        accounts.append({
+            "lender":          lender,
+            "account_type":    _v8_type(a.get("account_type")),
+            "account_number":  a.get("account_number") or "",
+            "opened_date":     opened,
+            "closed_date":     settled,
+            "balance":         bal if bal is not None else 0.0,
+            "credit_limit":    None,
+            "utilisation_pct": None,
+            "status":          status,
+            "default_date":    default_date,
+            "default_balance": default_balance,
+            "monthly_payment": _v8_amount(a.get("payment_amount")),
+            "payment_history": [],   # not provided by this Valid8 view
+            "last_updated":    None,
+        })
+        if is_default:
+            defaults.append({"lender": lender, "status": "DEFAULT",
+                             "amount": default_balance or 0, "date": default_date})
+
+    return {
+        "client":       client,
+        "accounts":     accounts,
+        "searches":     [],
+        "defaults":     defaults,
+        "risk_flags":   [],
+        "credit_score": None,
+        "_source":      "VALID8",
+    }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
