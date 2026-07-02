@@ -172,7 +172,7 @@ def _normalise_valid8(data: dict) -> dict:
 
         accounts.append({
             "lender":          lender,
-            "account_type":    _v8_type(a.get("account_type")),
+            "account_type":    _typed_by_lender(lender, _v8_type(a.get("account_type"))),
             "account_number":  a.get("account_number") or "",
             "opened_date":     opened,
             "closed_date":     settled,
@@ -206,12 +206,32 @@ def _normalise_valid8(data: dict) -> dict:
 # ─────────────────────────────────────────────────────────────────────────────
 
 # Experian CAIS account-type codes → internal type
+# (01 = hire purchase/conditional sale, 02 = unsecured loan, 04/05 = revolving
+# credit/credit card, 08 = mail order, 22 = communications, 23 = utility)
 _EXP_CODE_MAP = {
-    "00": "CURRENT_ACCOUNT", "01": "CREDIT_CARD", "02": "PERSONAL_LOAN", "03": "HIRE_PURCHASE",
-    "04": "PERSONAL_LOAN", "05": "OTHER", "06": "MORTGAGE", "07": "MAIL_ORDER", "08": "OTHER",
-    "09": "OTHER", "10": "CREDIT_CARD", "16": "OTHER", "17": "OTHER", "19": "HIRE_PURCHASE",
+    "00": "CURRENT_ACCOUNT", "01": "HIRE_PURCHASE", "02": "PERSONAL_LOAN", "03": "MORTGAGE",
+    "04": "CREDIT_CARD", "05": "CREDIT_CARD", "06": "CREDIT_CARD", "07": "OTHER",
+    "08": "MAIL_ORDER", "09": "OTHER", "10": "CREDIT_CARD", "15": "MORTGAGE",
+    "16": "PERSONAL_LOAN", "17": "PERSONAL_LOAN", "19": "OTHER",
     "22": "TELECOM", "23": "UTILITY", "26": "PAYDAY_LOAN", "37": "STORE_CARD",
 }
+
+# Lender-name override — same classifier the PDF/Boshhh path uses, so e.g.
+# Moneybarn/MotoNovo/Oodle are typed as car finance regardless of the CAIS code.
+_CLASSIFIER_TYPE_OVERRIDE = {
+    "motor_finance": "HIRE_PURCHASE",
+    "payday":        "PAYDAY_LOAN",
+    "catalogue":     "MAIL_ORDER",
+}
+
+
+def _typed_by_lender(lender: str, fallback: str) -> str:
+    try:
+        from app.analysis.lender_classifier import classify_lender
+        override = _CLASSIFIER_TYPE_OVERRIDE.get(classify_lender(lender or ""))
+        return override or fallback
+    except Exception:
+        return fallback
 
 
 def _is_bureau_results(data: dict) -> bool:
@@ -357,7 +377,8 @@ def _normalise_experian_report(data: dict) -> dict:
             except ValueError: pass
 
         accounts.append({
-            "lender": lender, "account_type": _exp_type(raw.get("accountType")),
+            "lender": lender,
+            "account_type": _typed_by_lender(lender, _exp_type(raw.get("accountType"))),
             "account_number": raw.get("accountNumber") or "", "opened_date": opened,
             "closed_date": settled, "balance": balance, "credit_limit": None,
             "utilisation_pct": None, "status": status, "default_date": default_date,
@@ -395,8 +416,8 @@ def _tu_account_camel(raw: dict, default_type):
     if not isinstance(raw, dict):
         return None
     lender = _first(raw, "lenderName", "companyName", "supplierName", "name") or "Unknown"
-    acc_type = _V8_TYPE_MAP.get(str(_first(raw, "accountType") or "").lower().strip(),
-                               default_type or "OTHER")
+    acc_type = _typed_by_lender(lender, _V8_TYPE_MAP.get(
+        str(_first(raw, "accountType") or "").lower().strip(), default_type or "OTHER"))
     balance     = _v8_amount(_first(raw, "balance", "currentBalance", "outstandingBalance"))
     default_bal = _v8_amount(_first(raw, "defaultBalance", "defaultedBalance"))
     start_date  = _fmt_date(_first(raw, "accountStartDate", "startDate", "openDate") or "")
