@@ -22,6 +22,10 @@ def deliver_outputs(self, job_id: int):
 
         job.status = "COMPLETE"
         job.completed_at = datetime.utcnow()
+        # Self-clean: the parsed report (jsonb) is intermediate data only needed
+        # up to document generation. Docs are now in S3, so drop it to keep the
+        # jobs table from growing unbounded. Re-runs can re-fetch from s3_raw_key.
+        job.normalised_data = None
 
         # Randomly flag for spot check
         if random.random() < SPOT_CHECK_RATE:

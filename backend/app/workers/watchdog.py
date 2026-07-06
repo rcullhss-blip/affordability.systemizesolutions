@@ -23,9 +23,13 @@ def rescue_stuck_jobs():
     try:
         cutoff = datetime.now(timezone.utc) - timedelta(minutes=STUCK_THRESHOLD_MINUTES)
 
+        # Include PENDING: a job whose fetch task was lost (e.g. broker/DB outage)
+        # sits in PENDING forever otherwise — this was the gap that stranded 1,002
+        # jobs in the 2026-07-06 outage. Re-queuing is safe: analyse clears prior
+        # LenderResults before insert, so no duplicates.
         stuck = db.execute(
             select(Job).where(
-                Job.status.in_(["FETCHING", "EXTRACTING", "PARSING", "ANALYSING", "GENERATING"]),
+                Job.status.in_(["PENDING", "FETCHING", "EXTRACTING", "PARSING", "ANALYSING", "GENERATING"]),
                 Job.created_at < cutoff.replace(tzinfo=None),
             )
         ).scalars().all()
@@ -63,8 +67,8 @@ def _requeue(job: Job):
         job.celery_task_id = task.id
         log.info("Watchdog: job %d FETCHING → re-queued fetch", job.id)
 
-    elif status in ("EXTRACTING", "PARSING") and job.s3_raw_key:
-        # Raw file on S3, re-extract
+    elif status in ("EXTRACTING", "PARSING", "PENDING") and job.s3_raw_key:
+        # Raw file on S3, re-extract (PENDING-with-raw-key = fetched but never extracted)
         job.status = "PENDING"
         task = extract_content.apply_async(args=[job.id], queue="extract")
         job.celery_task_id = task.id

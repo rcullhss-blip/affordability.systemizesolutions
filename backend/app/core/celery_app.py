@@ -14,6 +14,7 @@ celery_app = Celery(
         "app.workers.document",
         "app.workers.deliver",
         "app.workers.watchdog",
+        "app.workers.retention",
     ],
 )
 
@@ -35,11 +36,16 @@ celery_app.conf.update(
         "app.workers.document.*": {"queue": "document"},
         "app.workers.deliver.*": {"queue": "deliver"},
         "app.workers.watchdog.*": {"queue": "watchdog"},
+        "app.workers.retention.*": {"queue": "watchdog"},
     },
     beat_schedule={
         "watchdog-every-5-minutes": {
             "task": "app.workers.watchdog.rescue_stuck_jobs",
             "schedule": 300.0,  # every 5 minutes
+        },
+        "retention-purge-daily": {
+            "task": "app.workers.retention.purge_old_batches",
+            "schedule": 86400.0,  # once a day
         },
     },
 )
