@@ -21,6 +21,20 @@ def download_bytes(bucket: str, key: str) -> bytes:
     return s3_download(bucket, key)
 
 
+def list_keys(bucket: str, prefix: str) -> list[str]:
+    if settings.use_local_storage:
+        root = Path(settings.LOCAL_STORAGE_PATH) / bucket
+        if not root.is_dir():
+            return []
+        return sorted(
+            str(p.relative_to(root))
+            for p in root.rglob("*")
+            if p.is_file() and str(p.relative_to(root)).startswith(prefix)
+        )
+    from app.core.s3 import list_keys as s3_list
+    return s3_list(bucket, prefix)
+
+
 def get_download_url(bucket: str, key: str) -> str:
     if settings.use_local_storage:
         return f"/api/v1/files/{bucket}/{key}"

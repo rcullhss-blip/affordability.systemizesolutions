@@ -1,4 +1,5 @@
 from fastapi import APIRouter, UploadFile, File, Form, Depends, HTTPException
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from typing import Optional, List
 import uuid
@@ -7,10 +8,11 @@ import io
 import re
 from app.core.database import get_db
 from app.core.config import settings
-from app.core.storage import upload_bytes
+from app.core.storage import upload_bytes, list_keys
 from app.models.tables import Batch, Job
 from app.models.enums import JobStatus
 from app.workers.fetch import fetch_and_process
+from app.api.routes.webhook import _require_api_key
 
 router = APIRouter()
 
@@ -193,6 +195,51 @@ async def upload_zip(
     db.commit()
 
     return {"batch_id": batch.id, "jobs_created": len(jobs), "status": "queued"}
+
+
+class S3PrefixIngest(BaseModel):
+    batch_name: str
+    prefix: str
+    firm: str = "first_legal"
+    # Guard against accidentally turning an entire 100k staging area into one
+    # batch — split large staging areas into wave prefixes instead.
+    max_reports: int = 15_000
+
+
+@router.post("/s3-prefix", dependencies=[Depends(_require_api_key)])
+async def ingest_s3_prefix(body: S3PrefixIngest, db: Session = Depends(get_db)):
+    """Create a batch from reports ALREADY staged in the raw S3 bucket under a
+    prefix (bulk ingest path: CRA pull stages reports → this processes them).
+    Job creation + enqueue happens in the intake worker so the response is
+    instant regardless of batch size; keys already attached to a job are
+    skipped, so re-posting the same prefix is safe."""
+    from app.workers.intake import expand_s3_prefix, _is_report_key
+
+    prefix = body.prefix.lstrip("/")
+    if not prefix:
+        raise HTTPException(status_code=400, detail="prefix is required")
+
+    keys = [k for k in list_keys(settings.S3_BUCKET_RAW, prefix) if _is_report_key(k)]
+    if not keys:
+        raise HTTPException(status_code=404, detail=f"No report files found under prefix '{prefix}'")
+    if len(keys) > body.max_reports:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"{len(keys):,} reports under '{prefix}' exceeds max_reports "
+                f"({body.max_reports:,}) — split the staging area into wave prefixes "
+                f"or raise max_reports explicitly"
+            ),
+        )
+
+    batch = Batch(name=body.batch_name, total_reports=len(keys), firm=body.firm)
+    db.add(batch)
+    db.commit()
+    db.refresh(batch)
+
+    expand_s3_prefix.apply_async(args=[batch.id, prefix], queue="fetch")
+
+    return {"batch_id": batch.id, "reports_found": len(keys), "status": "expanding"}
 
 
 @router.post("/csv")

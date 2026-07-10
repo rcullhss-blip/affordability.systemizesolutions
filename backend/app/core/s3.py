@@ -27,6 +27,15 @@ def download_bytes(bucket: str, key: str) -> bytes:
     return response["Body"].read()
 
 
+def list_keys(bucket: str, prefix: str) -> list[str]:
+    """All object keys under a prefix (paginated — handles >1000 objects)."""
+    keys: list[str] = []
+    paginator = get_s3().get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+        keys.extend(obj["Key"] for obj in page.get("Contents", []))
+    return keys
+
+
 def generate_presigned_url(bucket: str, key: str, expires_in: int = 3600) -> str:
     return get_s3().generate_presigned_url(
         "get_object",

@@ -86,6 +86,84 @@ def expand_proclaim_batch(self, batch_id: int, s3_manifest_key: str):
         db.close()
 
 
+@celery_app.task(bind=True, max_retries=2, default_retry_delay=60)
+def expand_s3_prefix(self, batch_id: int, prefix: str, skip_existing: bool = True):
+    """
+    Create one Job per report already staged in S3 under `prefix` (bulk ingest —
+    e.g. a CRA pull staged 10k reports, then this turns them into a batch).
+    Files are already in the raw bucket so jobs get s3_raw_key preset and skip
+    the download; fetch_and_process passes them straight to extract.
+
+    skip_existing makes re-runs idempotent: keys that already belong to any job
+    are ignored, so a partially-expanded batch can be safely re-triggered.
+    """
+    from sqlalchemy import select
+    from app.workers.fetch import fetch_and_process
+    from app.core.storage import list_keys
+
+    db = SessionLocal()
+    try:
+        batch = db.get(Batch, batch_id)
+        if not batch:
+            return
+
+        keys = [k for k in list_keys(settings.S3_BUCKET_RAW, prefix)
+                if _is_report_key(k)]
+
+        if skip_existing:
+            existing: set[str] = set()
+            for i in range(0, len(keys), 1000):
+                sub = keys[i:i + 1000]
+                existing.update(
+                    db.execute(
+                        select(Job.s3_raw_key).where(Job.s3_raw_key.in_(sub))
+                    ).scalars()
+                )
+            keys = [k for k in keys if k not in existing]
+
+        total = 0
+        chunk: list[Job] = []
+
+        def _dispatch(jobs: list[Job]):
+            if not jobs:
+                return
+            db.commit()  # persist this chunk of jobs before any task is enqueued
+            for j in jobs:
+                t = fetch_and_process.apply_async(args=[j.id], queue="fetch")
+                j.celery_task_id = t.id
+            db.commit()
+
+        for key in keys:
+            job = Job(batch_id=batch_id, s3_raw_key=key, status="PENDING")
+            db.add(job)
+            chunk.append(job)
+            total += 1
+
+            if len(chunk) >= COMMIT_CHUNK:
+                _dispatch(chunk)
+                chunk = []
+
+        _dispatch(chunk)  # final partial chunk
+
+        batch = db.get(Batch, batch_id)
+        if batch:
+            batch.total_reports = total
+            db.commit()
+
+    except Exception as exc:
+        db.rollback()
+        raise self.retry(exc=exc)
+    finally:
+        db.close()
+
+
+_REPORT_EXTENSIONS = (".json", ".pdf", ".html", ".htm", ".docx", ".xlsx")
+
+
+def _is_report_key(key: str) -> bool:
+    return not key.endswith("/") and key.lower().endswith(_REPORT_EXTENSIONS)
+
+
 def _detect_agency(data: dict) -> str:
     report = data.get("report", {})
     if isinstance(report, dict):
