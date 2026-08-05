@@ -84,8 +84,9 @@ def generate_documents(self, job_id: int):
         db.commit()
 
         # Instructing firm — drives the LOC letterhead/branding.
+        # Per-case job.firm (IRL destination.brand_id) wins over the batch firm.
         batch = db.get(Batch, job.batch_id) if job.batch_id else None
-        firm = getattr(batch, "firm", None) or "first_legal"
+        firm = getattr(job, "firm", None) or getattr(batch, "firm", None) or "first_legal"
 
         schema = job.normalised_data or {}
         # Merge DB client record into schema so PDF/LOC have the real name, DOB,

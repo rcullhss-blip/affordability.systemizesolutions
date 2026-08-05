@@ -21,6 +21,7 @@ def _serialise_case(case: Case, job) -> dict:
         "lead_reference": case.lead_reference,
         "bosh_reference": case.bosh_reference,
         "source": case.source,
+        "destination_brand_id": case.destination_brand_id,
         "status": case.status,                        # QUEUED / OUTCOME_SENT / OUTCOME_FAILED
         "job_status": job.status if job else None,    # PENDING..COMPLETE (live pipeline state)
         "traffic_light": (job.traffic_light if job else None) or case.traffic_light,

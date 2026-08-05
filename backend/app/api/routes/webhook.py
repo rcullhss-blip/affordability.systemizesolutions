@@ -133,7 +133,11 @@ async def ingest_irl_case(
         db.flush()
     batch.total_reports = (batch.total_reports or 0) + 1
 
-    job = Job(batch_id=batch.id, s3_raw_key=s3_key, status="PENDING")
+    # Destination solicitor brand — selects the LOC letterhead (per-case via job.firm).
+    destination = payload.get("destination") or {}
+    brand_id = destination.get("brand_id")
+
+    job = Job(batch_id=batch.id, s3_raw_key=s3_key, status="PENDING", firm=brand_id)
     db.add(job)
     db.flush()
 
@@ -147,6 +151,7 @@ async def ingest_irl_case(
         lead_reference=lead_reference,
         bosh_reference=payload.get("bosh_reference"),
         source=payload.get("source") or "boshhh",
+        destination_brand_id=brand_id,
         status="QUEUED",
         triage=payload.get("triage"),
         client_name=full_name,

@@ -62,6 +62,9 @@ class Job(Base):
     completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     spot_check_required: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     spot_check_reviewed: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    # Instructing firm / destination solicitor brand for LOC letterhead (per-case,
+    # overrides batch.firm). For IRL cases this is the PCP platform's destination.brand_id.
+    firm: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
 
     batch: Mapped[Optional["Batch"]] = relationship("Batch", back_populates="jobs")
     client: Mapped[Optional["Client"]] = relationship("Client", back_populates="jobs")
@@ -128,6 +131,9 @@ class Case(Base):
     lead_reference: Mapped[str] = mapped_column(String(100), unique=True, index=True)
     bosh_reference: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     source: Mapped[str] = mapped_column(String(50), default="boshhh", server_default="boshhh")
+    # Destination solicitor brand (from the PCP platform's destination.brand_id) —
+    # selects the LOC letterhead and is echoed back on the outcome postback.
+    destination_brand_id: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
 
     # Coarse case status: QUEUED -> (job runs) -> OUTCOME_SENT | OUTCOME_FAILED
     status: Mapped[str] = mapped_column(String(30), default="QUEUED", server_default="QUEUED")

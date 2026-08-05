@@ -17,10 +17,34 @@ import httpx
 from app.core.celery_app import celery_app
 from app.core.database import SessionLocal
 from app.core.config import settings
+from app.core.storage import get_download_url
 from app.models.tables import Case, Job, LenderResult
 
 MAX_ATTEMPTS = 8      # after this a case is parked as OUTCOME_FAILED (requeue by resetting attempts)
 BATCH_LIMIT = 100     # cases per tick — bounds each run so it scales predictably
+
+
+def _build_documents(job: Job, lenders: list) -> list:
+    """Signed download URLs for the branded LOCs (one per lender) + the assessment.
+    The PCP platform fetches + stores these on receipt (URLs are short-lived)."""
+    docs = []
+    try:
+        if job.s3_assessment_key:
+            docs.append({
+                "type": "affordability_assessment",
+                "url": get_download_url(settings.S3_BUCKET_OUTPUTS, job.s3_assessment_key),
+            })
+        for lr in lenders:
+            if lr.loc_generated and lr.s3_loc_key:
+                docs.append({
+                    "type": "irl_loc",
+                    "lender": lr.lender_name,
+                    "url": get_download_url(settings.S3_BUCKET_OUTPUTS, lr.s3_loc_key),
+                })
+    except Exception:
+        # Never let URL signing break the postback — retried next tick.
+        raise
+    return docs
 
 
 def _build_outcome(case: Case, job: Job, lenders: list) -> dict:
@@ -32,6 +56,7 @@ def _build_outcome(case: Case, job: Job, lenders: list) -> dict:
         "outcome": "eligible" if eligible else "ineligible",
         "traffic_light": tl,
         "claim_value": None,  # V1 engine produces no monetary claim value
+        "destination_brand_id": case.destination_brand_id,  # echo back what the hub sent
         "timestamp": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
         "lenders": [
             {
@@ -42,6 +67,7 @@ def _build_outcome(case: Case, job: Job, lenders: list) -> dict:
             }
             for lr in lenders
         ],
+        "documents": _build_documents(job, lenders),
     }
 
 
