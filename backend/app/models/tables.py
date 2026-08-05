@@ -109,3 +109,58 @@ class LenderResult(Base):
     __table_args__ = (
         Index("ix_lender_results_lender_name", "lender_name"),
     )
+
+
+class Case(Base):
+    """
+    An IRL case handed to us by the PCP platform (Credit Hub).
+
+    Received at POST /api/v1/webhook/irl-case. The credit report is fed into
+    the standard assessment pipeline via a linked Job; once that Job completes,
+    the outcome-postback beat task reports the result back to the PCP platform.
+
+    Idempotent on `lead_reference` — a retry from the Hub never creates a duplicate.
+    """
+    __tablename__ = "cases"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    # Join key across all systems; unique => idempotency on retry
+    lead_reference: Mapped[str] = mapped_column(String(100), unique=True, index=True)
+    bosh_reference: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    source: Mapped[str] = mapped_column(String(50), default="boshhh", server_default="boshhh")
+
+    # Coarse case status: QUEUED -> (job runs) -> OUTCOME_SENT | OUTCOME_FAILED
+    status: Mapped[str] = mapped_column(String(30), default="QUEUED", server_default="QUEUED")
+
+    # The Hub's coarse IRL triage (fired_signals / strong / supporting) — audit only
+    triage: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+
+    # Denormalised client fields for the admin Cases tab (no join needed to list)
+    client_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    client_dob: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    client_postcode: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+
+    job_id: Mapped[Optional[int]] = mapped_column(ForeignKey("jobs.id"), nullable=True)
+    s3_raw_key: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    # Assessment outcome (copied from the Job at postback time; Job.normalised_data
+    # is cleared on completion, so we snapshot the result here)
+    outcome: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)  # eligible | ineligible
+    traffic_light: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
+    claim_value: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+
+    # Outcome postback bookkeeping
+    outcome_sent: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    outcome_sent_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    outcome_attempts: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    last_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    job: Mapped[Optional["Job"]] = relationship("Job")
+
+    __table_args__ = (
+        Index("ix_cases_status", "status"),
+        Index("ix_cases_job_id", "job_id"),
+    )

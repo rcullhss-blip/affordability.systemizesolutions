@@ -37,6 +37,23 @@ export async function getBatchJobs(id: number) {
   return data;
 }
 
+// ── Cases (IRL cases from the PCP platform) ─────────────────────────────────
+
+export async function getCases(skip = 0, limit = 50) {
+  const { data } = await api.get("/api/v1/cases/", { params: { skip, limit } });
+  return data;
+}
+
+export async function getCase(id: number) {
+  const { data } = await api.get(`/api/v1/cases/${id}`);
+  return data;
+}
+
+export async function getCasesSummary() {
+  const { data } = await api.get("/api/v1/cases/stats/summary");
+  return data;
+}
+
 // ── Jobs ───────────────────────────────────────────────────────────────────
 
 export async function getJob(id: number) {

@@ -15,6 +15,14 @@ class Settings(BaseSettings):
     LOCAL_STORAGE_PATH: str = "/tmp/systemize-storage"
     PROCLAIM_WEBHOOK_API_KEY: str = ""  # Set in env to secure the /webhook/bureau endpoints
 
+    # ── IRL case intake (PCP platform -> us) ──────────────────────────────────
+    # Inbound: the PCP platform authenticates its case POSTs with this key.
+    # Set to the IRL_API_KEY value the Hub sends (sk_irlcase_*). Empty = auth off (dev).
+    IRL_CASE_API_KEY: str = ""
+    # Outbound: where we POST the assessment outcome back, and the key we send.
+    PCP_OUTCOME_URL: str = ""       # e.g. https://api-production-ae9a.up.railway.app/api/v1/webhook/irl-outcome
+    PCP_OUTCOME_API_KEY: str = ""   # X-API-Key we send (the Hub's IRL_INBOUND_API_KEY / sk_irlout_*)
+
     @property
     def use_local_storage(self) -> bool:
         return not self.AWS_ACCESS_KEY_ID

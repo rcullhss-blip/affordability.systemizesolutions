@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
-from app.api.routes import batches, jobs, clients, analytics, upload, files, webhook
+from app.api.routes import batches, jobs, clients, analytics, upload, files, webhook, cases
 from app.core.config import settings
 
 app = FastAPI(
@@ -27,6 +27,7 @@ app.include_router(clients.router, prefix="/api/v1/clients", tags=["clients"])
 app.include_router(analytics.router, prefix="/api/v1/analytics", tags=["analytics"])
 app.include_router(files.router,   prefix="/api/v1/files",   tags=["files"])
 app.include_router(webhook.router, prefix="/api/v1/webhook", tags=["webhook"])
+app.include_router(cases.router,   prefix="/api/v1/cases",   tags=["cases"])
 
 
 @app.get("/health")
