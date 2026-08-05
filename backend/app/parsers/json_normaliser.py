@@ -30,6 +30,11 @@ def normalise_json_payload(data: dict) -> dict:
     """
     agency = (data.get("agency") or "").upper()
 
+    # Systemize IRL Case v1 (from the PCP platform) — assess from the normalised
+    # block so we never re-parse the bureau raw.
+    if _is_systemize_case(data):
+        return _normalise_systemize_case(data)
+
     if agency == "TRANSUNION" or _is_transunion(data):
         return _normalise_transunion(data)
 
@@ -66,6 +71,102 @@ def is_json_partner_post(raw_bytes: bytes) -> bool:
         return True
     except Exception:
         return False
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Systemize IRL Case v1 (PCP platform -> us)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _is_systemize_case(data: dict) -> bool:
+    """The IRL Case v1 envelope: a `credit_report` block, tagged source or a
+    pre-normalised accounts list."""
+    cr = data.get("credit_report")
+    if not isinstance(cr, dict):
+        return False
+    return str(data.get("source", "")).lower() == "systemize" or isinstance(cr.get("normalised"), dict)
+
+
+def _normalise_systemize_case(data: dict) -> dict:
+    """
+    Map a Systemize IRL Case v1 payload to the internal schema.
+
+    Uses `credit_report.normalised` (already our canonical shape: same account_type
+    enum, status values and YYYY-MM-DD dates) so the bureau raw is never re-parsed.
+    Client comes from the top-level case payload; `lead_reference` is the matter ref.
+    """
+    def _num(v):
+        try:
+            return float(v) if v is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    cr = data.get("credit_report") or {}
+    norm = cr.get("normalised") or {}
+    ci = data.get("client") or {}
+    addr = ci.get("address") or {}
+
+    name = " ".join(
+        str(x).strip() for x in
+        (ci.get("title"), ci.get("first_name"), ci.get("middle_name"), ci.get("last_name"))
+        if x and str(x).strip()
+    )
+    address = ", ".join(
+        str(p).strip() for p in
+        (addr.get("line1"), addr.get("line2"), addr.get("city"), addr.get("county"), addr.get("postcode"))
+        if p and str(p).strip()
+    )
+    client = {
+        "name":       name,
+        "dob":        ci.get("date_of_birth") or "",
+        "address":    address,
+        "email":      ci.get("email") or "",
+        "phone":      ci.get("phone") or "",
+        "matter_ref": data.get("lead_reference") or "",
+    }
+
+    accounts, defaults = [], []
+    for a in norm.get("accounts", []) or []:
+        status = (a.get("status") or "ACTIVE").upper()
+        lender = a.get("lender") or "Unknown"
+        bal = _num(a.get("balance"))
+        cl = _num(a.get("credit_limit"))
+        util = round(bal / cl * 100, 1) if (cl and cl > 0 and bal is not None) else None
+        default_date = a.get("default_date")
+        accounts.append({
+            "lender":          lender,
+            "account_type":    _typed_by_lender(lender, (a.get("account_type") or "OTHER").upper()),
+            "account_number":  a.get("account_number") or "",
+            "opened_date":     a.get("opened_date") or "",
+            "closed_date":     a.get("closed_date") or a.get("settled_date") or "",
+            "balance":         bal if bal is not None else 0.0,
+            "credit_limit":    cl,
+            "utilisation_pct": util,
+            "status":          status,
+            "default_date":    default_date,
+            "default_balance": (bal if status == "DEFAULT" else None),
+            "monthly_payment": _num(a.get("monthly_payment")),
+            "payment_history": a.get("payment_history") or [],
+            "last_updated":    a.get("last_updated"),
+        })
+        if status == "DEFAULT":
+            defaults.append({"lender": lender, "status": "DEFAULT",
+                             "amount": (bal or 0), "date": default_date})
+
+    searches = [
+        {"lender": s.get("lender") or "", "date": s.get("date") or "", "type": s.get("type") or ""}
+        for s in (norm.get("searches") or [])
+    ]
+
+    return {
+        "client":         client,
+        "accounts":       accounts,
+        "searches":       searches,
+        "defaults":       defaults,
+        "public_records": norm.get("public_records") or [],
+        "risk_flags":     [],
+        "credit_score":   None,
+        "_source":        "SYSTEMIZE_CASE",
+    }
 
 
 # ─────────────────────────────────────────────────────────────────────────────

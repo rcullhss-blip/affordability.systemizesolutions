@@ -115,16 +115,16 @@ async def ingest_irl_case(
         }
 
     credit_report = payload.get("credit_report") or {}
-    raw_report = credit_report.get("raw") or credit_report.get("normalised")
-    if not raw_report:
+    if not (credit_report.get("raw") or credit_report.get("normalised")):
         raise HTTPException(
             status_code=422,
             detail="credit_report.raw (or .normalised) is required",
         )
 
-    # Preserve the exact inbound report in S3 (audit + reprocessing)
+    # Store the full case envelope in S3 (raw for audit + normalised for assessment).
+    # The parser reads credit_report.normalised via the Systemize IRL Case branch.
     s3_key = f"raw/irl-case/{uuid.uuid4()}/{lead_reference}.json"
-    upload_bytes(settings.S3_BUCKET_RAW, s3_key, json.dumps(raw_report).encode("utf-8"))
+    upload_bytes(settings.S3_BUCKET_RAW, s3_key, json.dumps(payload).encode("utf-8"))
 
     batch = db.query(Batch).filter(Batch.name == IRL_CASES_BATCH).first()
     if not batch:
