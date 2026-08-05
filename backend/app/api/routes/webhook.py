@@ -76,7 +76,7 @@ def _parse_date_opt(value) -> Optional["datetime.date"]:
 IRL_CASES_BATCH = "irl-cases"
 
 
-@router.post("/irl-case")
+@router.post("/irl-case", status_code=202)
 async def ingest_irl_case(
     request: Request,
     db: Session = Depends(get_db),
