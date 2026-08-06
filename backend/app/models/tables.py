@@ -131,6 +131,11 @@ class Case(Base):
     lead_reference: Mapped[str] = mapped_column(String(100), unique=True, index=True)
     bosh_reference: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     source: Mapped[str] = mapped_column(String(50), default="boshhh", server_default="boshhh")
+    # Partner batch id (e.g. a Woodville bulk run) from the envelope's top-level
+    # `batch_id`. Stable across the upload; echoed back on the outcome so the
+    # partner groups/reconciles 100k results by their own batch. Distinct from
+    # the internal Job.batch_id FK.
+    partner_batch_id: Mapped[Optional[str]] = mapped_column(String(100), nullable=True, index=True)
     # Destination solicitor brand (from the PCP platform's destination.brand_id) —
     # selects the LOC letterhead and is echoed back on the outcome postback.
     destination_brand_id: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)

@@ -151,6 +151,7 @@ async def ingest_irl_case(
         lead_reference=lead_reference,
         bosh_reference=payload.get("bosh_reference"),
         source=payload.get("source") or "boshhh",
+        partner_batch_id=payload.get("batch_id"),
         destination_brand_id=brand_id,
         status="QUEUED",
         triage=payload.get("triage"),

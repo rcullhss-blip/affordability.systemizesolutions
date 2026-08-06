@@ -21,14 +21,25 @@ from app.core.storage import get_download_url
 from app.models.tables import Case, Job, LenderResult
 
 MAX_ATTEMPTS = 8      # after this a case is parked as OUTCOME_FAILED (requeue by resetting attempts)
-BATCH_LIMIT = 100     # cases per tick — bounds each run so it scales predictably
+# Cases per tick. Raised for bulk partner runs (e.g. Woodville 100k) so per-client
+# postbacks keep pace with the throttled runner's completion rate.
+BATCH_LIMIT = 500
+
+# Internal traffic light -> the partner tracker's Analysis Status label.
+_ANALYSIS_STATUS = {"GREEN": "Strong", "AMBER": "Mid", "RED": "Weak"}
 
 
 def _build_documents(job: Job, lenders: list) -> list:
-    """Signed download URLs for the branded LOCs (one per lender) + the assessment.
-    The PCP platform fetches + stores these on receipt (URLs are short-lived)."""
+    """Signed download URLs for the raw credit report, the assessment, and the
+    branded LOCs (one per lender) — the three tracker doc columns. The partner
+    fetches + stores these on receipt (URLs are short-lived, 7-day signed)."""
     docs = []
     try:
+        if job.s3_raw_key:
+            docs.append({
+                "type": "credit_report",
+                "url": get_download_url(settings.S3_BUCKET_RAW, job.s3_raw_key),
+            })
         if job.s3_assessment_key:
             docs.append({
                 "type": "affordability_assessment",
@@ -52,6 +63,8 @@ def _build_outcome(case: Case, job: Job, lenders: list) -> dict:
     eligible = tl in ("GREEN", "AMBER")
     return {
         "lead_reference": case.lead_reference,
+        "batch_id": case.partner_batch_id,   # echoed so the partner groups a batch
+        "source": case.source,
         "event": "accepted" if eligible else "rejected",
         "outcome": "eligible" if eligible else "ineligible",
         "traffic_light": tl,
@@ -62,6 +75,8 @@ def _build_outcome(case: Case, job: Job, lenders: list) -> dict:
             {
                 "lender": lr.lender_name,
                 "traffic_light": lr.traffic_light,
+                "analysis_status": _ANALYSIS_STATUS.get(lr.traffic_light, lr.traffic_light),
+                "case_status": "LOC Generated" if lr.loc_generated else "No LOC",
                 "claim_score": lr.claim_score,
                 "loc_generated": lr.loc_generated,
             }
