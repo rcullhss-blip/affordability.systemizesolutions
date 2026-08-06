@@ -84,33 +84,24 @@ def is_json_partner_post(raw_bytes: bytes) -> bool:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _is_systemize_case(data: dict) -> bool:
-    """The IRL Case v1 envelope: a `credit_report` block, tagged source or a
-    pre-normalised accounts list."""
+    """The IRL Case v1 envelope: a `credit_report` block, tagged source, a
+    pre-normalised accounts list, or a raw bureau report."""
     cr = data.get("credit_report")
     if not isinstance(cr, dict):
         return False
-    return str(data.get("source", "")).lower() == "systemize" or isinstance(cr.get("normalised"), dict)
+    return (
+        str(data.get("source", "")).lower() == "systemize"
+        or isinstance(cr.get("normalised"), dict)
+        or bool(cr.get("raw"))
+    )
 
 
-def _normalise_systemize_case(data: dict) -> dict:
-    """
-    Map a Systemize IRL Case v1 payload to the internal schema.
-
-    Uses `credit_report.normalised` (already our canonical shape: same account_type
-    enum, status values and YYYY-MM-DD dates) so the bureau raw is never re-parsed.
-    Client comes from the top-level case payload; `lead_reference` is the matter ref.
-    """
-    def _num(v):
-        try:
-            return float(v) if v is not None else None
-        except (TypeError, ValueError):
-            return None
-
-    cr = data.get("credit_report") or {}
-    norm = cr.get("normalised") or {}
+def _systemize_client(data: dict) -> dict:
+    """Build the client block from the IRL Case envelope. `lead_reference` (the
+    partner's Lead id) is the matter ref and the postback join key — NOT the raw
+    report's own clientReference (their Bosh ref)."""
     ci = data.get("client") or {}
     addr = ci.get("address") or {}
-
     name = " ".join(
         str(x).strip() for x in
         (ci.get("title"), ci.get("first_name"), ci.get("middle_name"), ci.get("last_name"))
@@ -121,7 +112,7 @@ def _normalise_systemize_case(data: dict) -> dict:
         (addr.get("line1"), addr.get("line2"), addr.get("city"), addr.get("county"), addr.get("postcode"))
         if p and str(p).strip()
     )
-    client = {
+    return {
         "name":       name,
         "dob":        ci.get("date_of_birth") or "",
         "address":    address,
@@ -129,6 +120,38 @@ def _normalise_systemize_case(data: dict) -> dict:
         "phone":      ci.get("phone") or "",
         "matter_ref": data.get("lead_reference") or "",
     }
+
+
+def _normalise_systemize_case(data: dict) -> dict:
+    """
+    Map a Systemize IRL Case v1 payload to the internal schema.
+
+    Preference order:
+      1. Parse `credit_report.raw` ourselves via the authoritative Experian CAIS
+         parser — gives correct account typing AND searches/public records, which
+         the partner's `normalised` block may not carry.
+      2. Fall back to `credit_report.normalised` (partner's canonical shape).
+    In both cases the client + `lead_reference` come from the envelope, not the raw.
+    """
+    def _num(v):
+        try:
+            return float(v) if v is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    cr = data.get("credit_report") or {}
+
+    # 1. Prefer parsing the raw Experian report ourselves.
+    raw = cr.get("raw")
+    if raw and _is_experian_bosh(raw):
+        schema = _normalise_experian_bosh(raw)
+        schema["client"] = _systemize_client(data)
+        schema["_source"] = "IRL_CASE_RAW_EXPERIAN"
+        return schema
+
+    # 2. Fall back to the partner's normalised block.
+    norm = cr.get("normalised") or {}
+    client = _systemize_client(data)
 
     accounts, defaults = [], []
     for a in norm.get("accounts", []) or []:
@@ -511,14 +534,28 @@ def _normalise_experian_report(data: dict) -> dict:
 # from _normalise_experian_report so neither path regresses the other.
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _is_experian_bosh(data: dict) -> bool:
+def _find_bosh_output(data: dict):
+    """Locate the Experian `output` block regardless of how the raw report is
+    nested. Handles the full wrapper ({transactionId, result:{jsonReport:{output}}}),
+    partial wrappers ({jsonReport:{output}}, {output}), or the output itself.
+    Returns the output dict (with fullConsumerData.consumerData.cAIS) or None."""
     if not isinstance(data, dict):
-        return False
-    out = (((data.get("result") or {}).get("jsonReport") or {}).get("output"))
-    if not isinstance(out, dict):
-        return False
-    cd = (out.get("fullConsumerData") or {}).get("consumerData") or {}
-    return isinstance(cd.get("cAIS"), list)
+        return None
+    for out in (
+        (((data.get("result") or {}).get("jsonReport") or {}).get("output")),
+        ((data.get("jsonReport") or {}).get("output")),
+        data.get("output"),
+        data,  # already the output level
+    ):
+        if isinstance(out, dict):
+            cd = (out.get("fullConsumerData") or {}).get("consumerData") or {}
+            if isinstance(cd.get("cAIS"), list):
+                return out
+    return None
+
+
+def _is_experian_bosh(data: dict) -> bool:
+    return _find_bosh_output(data) is not None
 
 
 # Authoritative Experian CAIS account-type codes -> internal type.
@@ -609,7 +646,7 @@ def _expb_default_date(codes: str, last_up: str) -> Optional[str]:
 
 
 def _normalise_experian_bosh(data: dict) -> dict:
-    out = data["result"]["jsonReport"]["output"]
+    out = _find_bosh_output(data) or {}
     cd = (out.get("fullConsumerData") or {}).get("consumerData") or {}
     raw_accounts = [
         det for blk in (cd.get("cAIS") or [])
