@@ -35,6 +35,12 @@ def normalise_json_payload(data: dict) -> dict:
     if _is_systemize_case(data):
         return _normalise_systemize_case(data)
 
+    # Experian "Bosh" variant: transactionId -> result.jsonReport.output, with
+    # cAISDetails (capital AIS) and ISO-string dates. Distinct from the Woodville
+    # Experian shape (caisDetails + {ccyy,mm,dd} objects) handled further down.
+    if _is_experian_bosh(data):
+        return _normalise_experian_bosh(data)
+
     if agency == "TRANSUNION" or _is_transunion(data):
         return _normalise_transunion(data)
 
@@ -494,6 +500,246 @@ def _normalise_experian_report(data: dict) -> dict:
         "client": client, "accounts": accounts, "searches": [], "defaults": defaults,
         "risk_flags": [], "credit_score": None, "_source": "EXPERIAN_REPORT",
     }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Experian "Bosh" variant  (transactionId -> result.jsonReport.output)
+#   - accounts under fullConsumerData.consumerData.cAIS[].cAISDetails[]
+#   - capitalised keys (cAISDetails, cAISAccStartDate) and ISO-string dates
+#   - balance/creditLimit as {narrative, caption, amount:"£1092"} objects
+# This is the shape the live Bosh credit-report route returns. Kept separate
+# from _normalise_experian_report so neither path regresses the other.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _is_experian_bosh(data: dict) -> bool:
+    if not isinstance(data, dict):
+        return False
+    out = (((data.get("result") or {}).get("jsonReport") or {}).get("output"))
+    if not isinstance(out, dict):
+        return False
+    cd = (out.get("fullConsumerData") or {}).get("consumerData") or {}
+    return isinstance(cd.get("cAIS"), list)
+
+
+# Authoritative Experian CAIS account-type codes -> internal type.
+# Source: Bosh "CodeMappings" (Experian data dictionary), 2026-08-06.
+# NB: codes are stored zero-padded in the report ("05") — int-normalised below.
+# Non-credit types (current account, telecom, utility, insurance, student loan,
+# mortgage) map to non-financial internal types so analyse.py excludes them from
+# affordability claims. Only genuine consumer-credit codes stay claimable.
+_EXP_BOSH_ACCOUNT_TYPE = {
+    0: "CURRENT_ACCOUNT", 1: "HIRE_PURCHASE", 2: "PERSONAL_LOAN", 3: "MORTGAGE",
+    4: "STORE_CARD", 5: "CREDIT_CARD", 6: "CREDIT_CARD", 7: "OTHER", 8: "MAIL_ORDER",
+    11: "OVERDRAFT", 12: "MORTGAGE", 13: "MORTGAGE", 14: "MORTGAGE",
+    15: "CURRENT_ACCOUNT", 16: "SECURED_LOAN", 17: "PERSONAL_LOAN", 18: "TELECOM",
+    19: "PERSONAL_LOAN", 20: "OTHER", 21: "UTILITY", 22: "HIRE_PURCHASE", 23: "OTHER",
+    24: "OTHER", 25: "MORTGAGE", 26: "PERSONAL_LOAN", 27: "CREDIT_CARD", 28: "PAYDAY_LOAN",
+    29: "HIRE_PURCHASE", 30: "MORTGAGE", 31: "MORTGAGE", 32: "MORTGAGE", 33: "MORTGAGE",
+    34: "MORTGAGE", 35: "MORTGAGE", 36: "OTHER", 37: "STORE_CARD", 38: "CREDIT_CARD",
+    39: "UTILITY", 40: "UTILITY", 41: "UTILITY", 42: "UTILITY", 43: "UTILITY", 44: "OTHER",
+    45: "INSURANCE", 46: "INSURANCE", 47: "INSURANCE", 48: "INSURANCE", 49: "INSURANCE",
+    50: "INSURANCE", 51: "INSURANCE", 52: "OTHER", 53: "TELECOM", 54: "TELECOM",
+    55: "TELECOM", 56: "TELECOM", 57: "TELECOM", 58: "TELECOM", 59: "TELECOM",
+    60: "STUDENT_LOAN", 61: "HOME_CREDIT", 62: "OTHER", 63: "OTHER", 64: "OTHER",
+    65: "OTHER", 66: "OTHER", 67: "OTHER", 68: "OTHER", 69: "MORTGAGE", 70: "OTHER",
+}
+
+
+def _exp_bosh_type(code) -> str:
+    try:
+        return _EXP_BOSH_ACCOUNT_TYPE.get(int(str(code).strip()), "OTHER")
+    except (TypeError, ValueError):
+        return "OTHER"
+
+
+def _bosh_payment_history(codes: str) -> list:
+    """Translate raw CAIS monthly status codes into the engine's payment vocabulary.
+    Authoritative CAIS codes: 0=satisfactory, 1-6=months delinquent, 8=default,
+    9=bad debt, S=slow payer, U=unclassified, D=DORMANT (not default).
+    Engine expects: 0=ok, 1-6=arrears, D=default. So 8/9 -> D; dormant/slow/
+    unclassified are dropped (not adverse arrears markers)."""
+    out = []
+    for c in codes:
+        if c in ("8", "9"):
+            out.append("D")
+        elif c in "0123456":
+            out.append(c)
+        # D (dormant), S (slow payer), U (unclassified), blanks -> not counted
+    return out
+
+
+def _expb_money(obj) -> Optional[float]:
+    """Parse an Experian money field: a {amount:"£1,092"} object or a bare string."""
+    if isinstance(obj, dict):
+        obj = obj.get("amount")
+    if obj in (None, ""):
+        return None
+    m = re.search(r"([\d,]+(?:\.\d+)?)", str(obj).replace("£", ""))
+    return float(m.group(1).replace(",", "")) if m else None
+
+
+def _expb_monthly(mrep) -> Optional[float]:
+    """mnthlyRepayment is a list of {mnthlyRepayment:"0000163", ...}; take the first."""
+    if isinstance(mrep, list) and mrep:
+        try:
+            return float(int(str(mrep[0].get("mnthlyRepayment") or "0")))
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def _expb_default_date(codes: str, last_up: str) -> Optional[str]:
+    """accountStatusCodes is most-recent-month-first. The default began at the
+    OLDEST month of the leading run of default markers (8=default, 9=bad debt),
+    anchored to lastUpdatedDate."""
+    first = next((i for i, c in enumerate(codes) if c in ("8", "9")), None)
+    if first is None:
+        return None
+    j = first
+    while j + 1 < len(codes) and codes[j + 1] in ("8", "9"):
+        j += 1
+    if last_up:
+        try:
+            from dateutil.relativedelta import relativedelta
+            base = datetime.strptime(last_up, "%Y-%m-%d").date()
+            return str(base - relativedelta(months=j))
+        except (ValueError, ImportError):
+            pass
+    return last_up or None
+
+
+def _normalise_experian_bosh(data: dict) -> dict:
+    out = data["result"]["jsonReport"]["output"]
+    cd = (out.get("fullConsumerData") or {}).get("consumerData") or {}
+    raw_accounts = [
+        det for blk in (cd.get("cAIS") or [])
+        for det in (blk.get("cAISDetails") or [])
+        if isinstance(det, dict)
+    ]
+
+    accounts, defaults = [], []
+    for raw in raw_accounts:
+        lender = (raw.get("supplyCompanyName") or raw.get("name") or "Unknown").strip() or "Unknown"
+        codes = (raw.get("accountStatusCodes") or "").strip()
+        worst = str(raw.get("worstStatus") or "").upper()
+        acc_status = str(raw.get("accountStatus") or "").upper()
+        opened = _fmt_date(raw.get("cAISAccStartDate"))
+        settled = _fmt_date(raw.get("settlementDate"))
+        last_up = _fmt_date(raw.get("lastUpdatedDate"))
+
+        # payment history + default detection use authoritative CAIS status codes:
+        # 8=default, 9=bad debt are adverse; D=dormant / S=slow payer are NOT defaults.
+        payment_hist = _bosh_payment_history(codes)
+        is_default = any(c in ("8", "9") for c in codes) or worst in ("8", "9")
+
+        bal = _expb_money(raw.get("balance"))
+        lim = _expb_money(raw.get("creditLimit"))
+        default_date = _expb_default_date(codes, last_up) if is_default else None
+
+        if is_default:
+            status = "DEFAULT"
+        elif (raw.get("balance") or {}).get("narrative") == "S" or settled:
+            status, bal = "SETTLED", 0.0
+        else:
+            status = "ACTIVE"
+
+        util = round(bal / lim * 100, 1) if (lim and lim > 0 and bal is not None) else None
+
+        accounts.append({
+            "lender": lender,
+            "account_type": _typed_by_lender(lender, _exp_bosh_type(raw.get("accountType"))),
+            "account_number": raw.get("accountNumber") or "",
+            "opened_date": opened, "closed_date": settled, "last_updated": last_up,
+            "balance": bal if bal is not None else 0.0, "credit_limit": lim,
+            "utilisation_pct": util, "status": status,
+            "default_date": default_date, "default_balance": (bal if is_default else None),
+            "monthly_payment": _expb_monthly(raw.get("mnthlyRepayment")),
+            "payment_history": payment_hist,
+        })
+        if is_default:
+            defaults.append({"lender": lender, "status": "DEFAULT",
+                             "amount": bal or 0, "date": default_date})
+
+    searches = _expb_searches(cd)
+    public_records = _expb_public_records(cd)
+    for pr in public_records:
+        defaults.append(pr)
+
+    return {
+        "client": _expb_client(data, out),
+        "accounts": accounts, "searches": searches, "defaults": defaults,
+        "public_records": public_records, "risk_flags": [], "credit_score": None,
+        "_source": "EXPERIAN_BOSH",
+    }
+
+
+def _expb_client(data: dict, out: dict) -> dict:
+    """Best-effort client block. On the live (unredacted) file applicants[] and
+    locations[] carry the name/address; on the redacted sample these are blanked."""
+    name = ""
+    for a in (out.get("applicants") or []):
+        nm = (a or {}).get("applicantName") or (a or {}).get("name") or {}
+        if isinstance(nm, dict):
+            name = " ".join(str(x).strip() for x in
+                             (nm.get("title"), nm.get("firstName") or nm.get("forename"),
+                              nm.get("surname")) if x and str(x).strip())
+        if name:
+            break
+    return {
+        "name": name or "", "dob": "", "address": "", "email": "", "phone": "",
+        "matter_ref": data.get("clientReference") or "",
+    }
+
+
+def _expb_searches(cd: dict) -> list:
+    """CAPS (credit application searches) feed the hard-search scoring. The live
+    field shape is confirmed against a real sample during integration; parse
+    defensively so an unexpected shape yields [] rather than a crash."""
+    searches = []
+    caps = cd.get("cAPS")
+    if not isinstance(caps, list):
+        return searches
+    for blk in caps:
+        details = (blk or {}).get("cAPSDetails") or (blk or {}).get("capsDetails") or []
+        if isinstance(details, dict):
+            details = [details]
+        for s in details if isinstance(details, list) else []:
+            if not isinstance(s, dict):
+                continue
+            date_v = _fmt_date(s.get("searchDate") or s.get("date") or s.get("dateOfSearch"))
+            lender = (s.get("supplyCompanyName") or s.get("companyName") or s.get("supplierName") or "").strip()
+            if date_v or lender:
+                searches.append({
+                    "date": date_v, "lender": lender,
+                    "search_type": "HARD", "search_subtype": "APPLICATION",
+                })
+    return searches
+
+
+def _expb_public_records(cd: dict) -> list:
+    """CCJs / insolvencies from publicInformation. Defensive: unknown shape -> []."""
+    records = []
+    pub = cd.get("publicInformation")
+    if not isinstance(pub, (list, dict)):
+        return records
+    blocks = pub if isinstance(pub, list) else [pub]
+    for blk in blocks:
+        details = (blk or {}).get("publicInfoDetails") or (blk or {}).get("details") or []
+        if isinstance(details, dict):
+            details = [details]
+        for r in details if isinstance(details, list) else []:
+            if not isinstance(r, dict):
+                continue
+            kind = str(r.get("type") or r.get("recordType") or "").upper()
+            is_ccj = "JUDG" in kind or "CCJ" in kind or "COURT" in kind
+            records.append({
+                "lender": "CCJ" if is_ccj else "PUBLIC_RECORD",
+                "status": "CCJ" if is_ccj else "INSOLVENCY",
+                "record_type": kind.title() or "Public Record",
+                "amount": _expb_money(r.get("amount") or r.get("value")) or 0,
+                "date": _fmt_date(r.get("date") or r.get("startDate") or r.get("courtDate")),
+            })
+    return records
 
 
 # TransUnion (camelCase, nested under jsonReport.report) — Woodville variant

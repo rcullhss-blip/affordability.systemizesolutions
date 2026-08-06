@@ -67,6 +67,8 @@ def _looks_like_json_partner_post(raw_bytes: bytes) -> bool:
                 '"soleSearch"',
                 '"nonAddressSpecificData"',
                 '"agency"',
+                '"transactionId"',   # Experian "Bosh" variant wrapper
+                '"jsonReport"',      # Experian "Bosh" variant wrapper
             )
         )
     except Exception:
