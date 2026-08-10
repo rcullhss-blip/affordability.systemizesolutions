@@ -1,6 +1,6 @@
 import axios from "axios";
 
-const BASE = process.env.NEXT_PUBLIC_API_URL || "https://systemize-backend-production.up.railway.app";
+const BASE = process.env.NEXT_PUBLIC_API_URL || "https://systemize-backend.onrender.com";
 
 export const api = axios.create({
   baseURL: BASE,
