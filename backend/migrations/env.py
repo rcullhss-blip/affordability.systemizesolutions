@@ -9,9 +9,12 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-# Override sqlalchemy.url from environment variable if set (Railway / production)
+# Override sqlalchemy.url from environment variable if set (Railway / Render / prod)
 db_url = os.environ.get("DATABASE_URL")
 if db_url:
+    # Render hands out `postgres://`; SQLAlchemy 2.x needs `postgresql://`.
+    if db_url.startswith("postgres://"):
+        db_url = "postgresql://" + db_url[len("postgres://"):]
     config.set_main_option("sqlalchemy.url", db_url)
 
 target_metadata = Base.metadata

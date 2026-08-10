@@ -4,8 +4,15 @@ from app.core.config import settings
 
 import os
 _is_worker = os.environ.get("CELERY_WORKER") == "1"
+
+# Some managed Postgres providers (e.g. Render) hand out a `postgres://` URL,
+# which SQLAlchemy 2.x no longer recognises — normalise to `postgresql://`.
+_db_url = settings.DATABASE_URL
+if _db_url.startswith("postgres://"):
+    _db_url = "postgresql://" + _db_url[len("postgres://"):]
+
 engine = create_engine(
-    settings.DATABASE_URL,
+    _db_url,
     pool_pre_ping=True,
     pool_size=3 if _is_worker else 10,
     max_overflow=5 if _is_worker else 20,

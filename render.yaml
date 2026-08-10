@@ -1,0 +1,141 @@
+# Render Blueprint for the Systemize / IRL stack.
+# Mirrors the Railway topology: API + Celery worker + Celery beat, sharing one
+# Docker image (role-selected by SERVICE_ROLE), plus managed Postgres and a
+# Redis-compatible key-value store. S3 stays on AWS (unchanged) — the ban only
+# affected compute, so we point the same buckets/creds at the new host.
+#
+# Deploy: Render Dashboard -> New -> Blueprint -> connect this repo. Then set the
+# secret env vars (marked `sync: false`) in the dashboard. Plans below are safe
+# defaults — adjust in the dashboard if Render rejects a plan id or you need more.
+
+databases:
+  - name: systemize-db
+    databaseName: systemize
+    plan: basic-1gb
+    region: frankfurt          # EU, closest to AWS eu-west-2 + UK partners
+
+envVarGroups:
+  - name: systemize-shared
+    envVars:
+      # ── AWS S3 (unchanged — data already lives here) ──
+      - key: AWS_ACCESS_KEY_ID
+        sync: false            # set in dashboard (secret)
+      - key: AWS_SECRET_ACCESS_KEY
+        sync: false
+      - key: AWS_REGION
+        value: eu-west-2
+      - key: S3_BUCKET_RAW
+        value: systemize-raw-reports
+      - key: S3_BUCKET_OUTPUTS
+        value: systemize-outputs
+      # ── IRL / PCP integration ──
+      - key: IRL_CASE_API_KEY          # inbound: key PCP sends on /irl-case
+        sync: false
+      - key: PCP_OUTCOME_URL           # outbound: the PCP hub /irl-outcome URL
+        sync: false
+      - key: PCP_OUTCOME_API_KEY       # outbound: key we send to the hub
+        sync: false
+      - key: PROCLAIM_WEBHOOK_API_KEY
+        sync: false
+      - key: ANTHROPIC_API_KEY         # optional
+        sync: false
+      - key: ENVIRONMENT
+        value: production
+      - key: SECRET_KEY
+        generateValue: true            # generated once, shared across services
+
+services:
+  # ── Redis-compatible broker/result backend ──
+  - type: keyvalue
+    name: systemize-redis
+    plan: starter
+    region: frankfurt
+    ipAllowList: []                    # internal only
+    maxmemoryPolicy: noeviction        # never evict queued Celery tasks
+
+  # ── API (FastAPI); runs `alembic upgrade head` then uvicorn ──
+  - type: web
+    name: systemize-backend
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    region: frankfurt
+    plan: standard
+    healthCheckPath: /health
+    envVars:
+      - key: SERVICE_ROLE
+        value: api
+      - key: DATABASE_URL
+        fromDatabase:
+          name: systemize-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: systemize-redis
+          property: connectionString
+      - fromGroup: systemize-shared
+
+  # ── Celery worker (gevent, all queues) ──
+  - type: worker
+    name: systemize-worker
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    region: frankfurt
+    plan: standard
+    envVars:
+      - key: SERVICE_ROLE
+        value: worker
+      - key: CELERY_WORKER            # smaller DB pool on workers
+        value: "1"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: systemize-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: systemize-redis
+          property: connectionString
+      - fromGroup: systemize-shared
+
+  # ── Celery beat (scheduler) — MUST stay a single instance ──
+  - type: worker
+    name: systemize-beat
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    region: frankfurt
+    plan: starter
+    numInstances: 1                    # never scale beat: duplicate scheduled tasks
+    envVars:
+      - key: SERVICE_ROLE
+        value: beat
+      - key: CELERY_WORKER
+        value: "1"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: systemize-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: systemize-redis
+          property: connectionString
+      - fromGroup: systemize-shared
+
+  # ── Admin frontend (Next.js). Optional / second phase — the pipeline runs
+  #    without it. NEXT_PUBLIC_API_URL is baked at build time, so set it to the
+  #    backend URL (below) before this builds. ──
+  - type: web
+    name: systemize-frontend
+    runtime: node
+    rootDir: frontend
+    region: frankfurt
+    plan: starter
+    buildCommand: npm ci && npm run build
+    startCommand: npm start
+    envVars:
+      - key: NEXT_PUBLIC_API_URL
+        sync: false                    # set to https://systemize-backend...onrender.com after backend deploys
