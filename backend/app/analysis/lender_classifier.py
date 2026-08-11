@@ -60,6 +60,19 @@ _GUARANTOR = [
     "amigo loans", "guarantor my loan", "uk credit", "buddy loans",
     "george banco", "1plus1",
 ]
+# Mobile / telecom / broadband providers — NOT consumer credit, so out of scope
+# for affordability claims (no LOC). Kept deliberately specific to avoid matching
+# real lenders, plus a few safe generic tokens no consumer-credit lender uses.
+_TELECOM = [
+    "ee limited", "ee mobile", "everything everywhere", "vodafone", "o2",
+    "telefonica", "three mobile", "hutchison 3g", "hutchison3g", "3 mobile",
+    "tesco mobile", "giffgaff", "sky mobile", "sky uk", "virgin mobile",
+    "virgin media", "id mobile", "lebara", "lycamobile", "lyca mobile",
+    "plusnet", "talktalk", "talk talk", "asda mobile", "smarty", "voxi",
+    "gomo", "bt mobile", "bt group", "bt plc", "british telecom", "bt broadband",
+    "now broadband", "shell energy broadband", "utility warehouse",
+    "mobile", "telecom", "communications", "broadband",
+]
 
 # Entities that may be brokers/intermediaries rather than regulated creditors.
 # Presence of these entities as a "lender" on a credit report warrants solicitor verification
@@ -85,6 +98,7 @@ _register(_OVERDRAFT,     "overdraft")
 _register(_PERSONAL_LOAN, "personal_loan")
 _register(_HOME_CREDIT,   "home_credit")
 _register(_GUARANTOR,     "guarantor")
+_register(_TELECOM,       "telecom")
 
 
 def classify_lender(lender_name: str) -> str:

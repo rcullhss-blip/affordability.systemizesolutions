@@ -47,6 +47,10 @@ def run_analysis(self, job_id: int):
 
         def _is_non_financial(name: str) -> bool:
             n = name.lower()
+            # Mobile/telecom providers are out of scope (never a consumer-credit LOC),
+            # even when the account slips through typed as OTHER.
+            if classify_lender(name) == "telecom":
+                return True
             return any(pat in n for pat in NON_FINANCIAL_PATTERNS)
 
         lender_groups: dict[str, list] = {}

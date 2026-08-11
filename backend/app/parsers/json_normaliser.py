@@ -352,6 +352,7 @@ _CLASSIFIER_TYPE_OVERRIDE = {
     "motor_finance": "HIRE_PURCHASE",
     "payday":        "PAYDAY_LOAN",
     "catalogue":     "MAIL_ORDER",
+    "telecom":       "TELECOM",       # mobile/telecom -> out of scope (no LOC)
 }
 
 
