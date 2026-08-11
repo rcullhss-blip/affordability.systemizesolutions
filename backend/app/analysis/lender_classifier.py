@@ -69,7 +69,7 @@ _TELECOM = [
     "tesco mobile", "giffgaff", "sky mobile", "sky uk", "virgin mobile",
     "virgin media", "id mobile", "lebara", "lycamobile", "lyca mobile",
     "plusnet", "talktalk", "talk talk", "asda mobile", "smarty", "voxi",
-    "gomo", "bt mobile", "bt group", "bt plc", "british telecom", "bt broadband",
+    "gomo", "h3g", "bt mobile", "bt group", "bt plc", "british telecom", "bt broadband",
     "now broadband", "shell energy broadband", "utility warehouse",
     "mobile", "telecom", "communications", "broadband",
 ]

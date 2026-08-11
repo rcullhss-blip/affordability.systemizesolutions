@@ -33,7 +33,7 @@ def _has_real_grounds(flags) -> bool:
 # the cleaned lender name so they're excluded without false-positiving real lenders.
 _MOBILE_NETWORKS = {
     "ee", "o2", "three", "3", "orange", "t-mobile", "t mobile", "tmobile",
-    "ee mobile", "o2 mobile", "three uk",
+    "ee mobile", "o2 mobile", "three uk", "h3g", "h3g uk", "hutchison 3g",
 }
 
 
