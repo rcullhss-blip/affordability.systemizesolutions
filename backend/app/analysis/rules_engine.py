@@ -217,7 +217,7 @@ def analyse_lender(
     all_accounts = full_schema.get("accounts", [])
     active_count = sum(1 for a in all_accounts if (a.get("status") or "").upper() == "ACTIVE")
     if len(all_accounts) >= 5:
-        score += 15
+        score += 10
         flags.append({"type": "DEBT_STACKING", "severity": "MEDIUM",
                       "description": (
                           f"{active_count} active credit facilities identified at date of lending — "
@@ -226,9 +226,9 @@ def analyse_lender(
 
     # --- Repeat borrowing with same lender ---
     if len(accounts) >= 2:
-        score += 15
+        score += 10
         flags.append({"type": "REPEAT_BORROWING", "severity": "MEDIUM",
-                      "description": f"{len(accounts)} accounts with {lender_name} — repeat subprime lending pattern"})
+                      "description": f"{len(accounts)} concurrent agreements with {lender_name} — repeat lending relationship"})
 
     # --- Possible debt purchaser (account defaults on or near opening date) ---
     if _is_possible_debt_purchaser(viable_accounts):

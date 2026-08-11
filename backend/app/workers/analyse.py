@@ -59,6 +59,8 @@ def run_analysis(self, job_id: int):
             "pra group", "pra capital", "lowell", "cabot financial",
             "intrum", "arrow global", "hoist finance", "moorcroft",
             "link financial", "1st credit", "creditcorp",
+            # Charge cards (pay-in-full, no revolving balance) — out of scope
+            "american express", "amex",
         ]
 
         def _is_non_financial(name: str) -> bool:
