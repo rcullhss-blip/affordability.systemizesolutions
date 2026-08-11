@@ -47,7 +47,7 @@ _PERSONAL_LOAN = [
     "avant credit", "hitachi", "tesco personal finance",
     "sainsbury", "m&s bank", "post office", "lendable", "zopa ltd",
     "shawbrook", "bamboo loans", "tandem bank", "oakbrook finance",
-    "premium credit", "snap finance", "loans 2 go", "uk credit",
+    "snap finance", "loans 2 go", "uk credit",
     "fair finance", "live lend", "abound", "admiral financial",
     "propensio", "plata finance", "wollit", "steadypay",
 ]
@@ -72,6 +72,14 @@ _TELECOM = [
     "gomo", "bt mobile", "bt group", "bt plc", "british telecom", "bt broadband",
     "now broadband", "shell energy broadband", "utility warehouse",
     "mobile", "telecom", "communications", "broadband",
+]
+# Insurance premium finance (spreading an insurance premium into monthly
+# instalments) — not really irresponsible-lending scope. Only claimable if there
+# are genuine affordability grounds (handled in analyse.py), never on structural
+# debt-stacking alone.
+_PREMIUM_FINANCE = [
+    "premium credit", "premium finance", "premfina", "close brothers premium",
+    "bexhill", "orchard funding", "ravensworth", "insurance premium",
 ]
 
 # Entities that may be brokers/intermediaries rather than regulated creditors.
@@ -99,6 +107,7 @@ _register(_PERSONAL_LOAN, "personal_loan")
 _register(_HOME_CREDIT,   "home_credit")
 _register(_GUARANTOR,     "guarantor")
 _register(_TELECOM,       "telecom")
+_register(_PREMIUM_FINANCE, "premium_finance")
 
 
 def classify_lender(lender_name: str) -> str:

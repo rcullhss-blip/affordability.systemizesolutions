@@ -11,6 +11,22 @@ from app.workers.document import generate_documents
 from sqlalchemy.orm.attributes import flag_modified
 
 
+# Flags that represent genuine affordability / conduct grounds — not the
+# structural debt-stacking / repeat-borrowing that fires on almost every lender.
+# Used to gate out-of-scope entities (e.g. insurance premium finance) so they
+# only produce a claim when there's a real adverse signal.
+_SUBSTANTIVE_FLAGS = {
+    "REPEATED_MISSED_PAYMENTS", "MISSED_PAYMENT", "HIGH_UTILISATION",
+    "ELEVATED_UTILISATION", "ACTIVE_ADVERSE_AT_LENDING", "PAYDAY_LOAN",
+    "ACTIVE_CCJ", "MULTIPLE_CCJS", "PUBLIC_RECORD_INSOLVENCY", "DEFAULT_REGISTERED",
+}
+
+
+def _has_real_grounds(flags) -> bool:
+    return any(isinstance(f, dict) and f.get("type") in _SUBSTANTIVE_FLAGS
+               for f in (flags or []))
+
+
 @celery_app.task(bind=True, max_retries=2, default_retry_delay=15)
 def run_analysis(self, job_id: int):
     db = SessionLocal()
@@ -73,6 +89,13 @@ def run_analysis(self, job_id: int):
                 acc["computed_at_lending"] = cal
 
             result = analyse_lender(lender_name, accs, searches, defaults, schema)
+
+            # Insurance premium finance is out of IRL scope UNLESS there are real
+            # affordability grounds — a genuine adverse/conduct signal, not just
+            # the structural debt-stacking / repeat-borrowing that fires on every
+            # lender. Without real grounds it's forced RED (no LOC).
+            if classify_lender(lender_name) == "premium_finance" and not _has_real_grounds(result["flags"]):
+                result = {**result, "traffic_light": "RED"}
 
             lr = LenderResult(
                 job_id=job.id,
