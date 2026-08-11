@@ -18,6 +18,7 @@ _BLOCKLIST_FRAGMENTS = [
     "JAJA FINANCE",               # Jaja Finance Limited — administration 2023
     "KOYO FINANCE",               # Koyo Finance 1 Ltd — administration
     "MATCH THE CASH",             # Match The Cash — ceased trading
+    "MORSES CLUB",                # Morses Club plc — administration 2023 (confirmed 2026-08-11)
     "OAKAM",                      # Oakam 2 Ltd — administration
     "PCF BANK",                   # PCF Bank — administration 2023
     "SHOP DIRECT FINANCE",        # Shop Direct Finance Company Ltd — dissolved (Very Group restructure)
