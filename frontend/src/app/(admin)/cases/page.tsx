@@ -45,7 +45,7 @@ function Stat({ label, value, tone }: { label: string; value: number; tone?: str
 
 export default function CasesPage() {
   const [cases, setCases] = useState<any[]>([]);
-  const [summary, setSummary] = useState<any>({ total: 0, in_progress: 0, outcome_sent: 0, failed: 0 });
+  const [summary, setSummary] = useState<any>({ total: 0, in_progress: 0, outcome_sent: 0, locs_sent: 0, failed: 0 });
   const [loading, setLoading] = useState(true);
 
   const load = () =>
@@ -65,10 +65,11 @@ export default function CasesPage() {
         <p className="text-gray-500 text-sm mt-1">IRL cases from the PCP platform — auto-refreshes every 8s</p>
       </div>
 
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mb-6">
         <Stat label="Total" value={summary.total} />
         <Stat label="In progress" value={summary.in_progress} tone="text-blue-400" />
         <Stat label="Outcome sent" value={summary.outcome_sent} tone="text-green-400" />
+        <Stat label="LOCs sent" value={summary.locs_sent} tone="text-emerald-400" />
         <Stat label="Failed" value={summary.failed} tone="text-red-400" />
       </div>
 

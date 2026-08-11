@@ -56,9 +56,18 @@ def cases_summary(db: Session = Depends(get_db)):
     total = db.query(func.count(Case.id)).scalar() or 0
     sent = db.query(func.count(Case.id)).filter(Case.outcome_sent.is_(True)).scalar() or 0
     failed = db.query(func.count(Case.id)).filter(Case.status == "OUTCOME_FAILED").scalar() or 0
+    # LOCs delivered to the PCP system: generated LOCs on cases whose outcome was sent.
+    locs_sent = (
+        db.query(func.count(LenderResult.id))
+        .join(Job, LenderResult.job_id == Job.id)
+        .join(Case, Case.job_id == Job.id)
+        .filter(LenderResult.loc_generated.is_(True), Case.outcome_sent.is_(True))
+        .scalar() or 0
+    )
     return {
         "total": total,
         "outcome_sent": sent,
+        "locs_sent": locs_sent,
         "failed": failed,
         "in_progress": max(total - sent - failed, 0),
     }
