@@ -1,4 +1,5 @@
 import copy
+import re
 from celery import shared_task
 from app.core.celery_app import celery_app
 from app.core.database import SessionLocal
@@ -25,6 +26,20 @@ _SUBSTANTIVE_FLAGS = {
 def _has_real_grounds(flags) -> bool:
     return any(isinstance(f, dict) and f.get("type") in _SUBSTANTIVE_FLAGS
                for f in (flags or []))
+
+
+# Mobile networks whose names are too short to match safely by substring (bare
+# 'EE' is a substring of 'speedycash'/'freemans', etc.). Matched EXACTLY against
+# the cleaned lender name so they're excluded without false-positiving real lenders.
+_MOBILE_NETWORKS = {
+    "ee", "o2", "three", "3", "orange", "t-mobile", "t mobile", "tmobile",
+    "ee mobile", "o2 mobile", "three uk",
+}
+
+
+def _is_mobile_network(name: str) -> bool:
+    core = re.sub(r'\b(ltd|limited|plc|uk|group|the)\b', '', (name or "").lower()).strip().strip('.,& ')
+    return core in _MOBILE_NETWORKS
 
 
 @celery_app.task(bind=True, max_retries=2, default_retry_delay=15)
@@ -66,8 +81,10 @@ def run_analysis(self, job_id: int):
         def _is_non_financial(name: str) -> bool:
             n = name.lower()
             # Mobile/telecom providers are out of scope (never a consumer-credit LOC),
-            # even when the account slips through typed as OTHER.
-            if classify_lender(name) == "telecom":
+            # even when the account slips through typed as OTHER. _is_mobile_network
+            # catches bare short names (EE, O2, Three, Orange) that substring matching
+            # misses or mis-classifies.
+            if _is_mobile_network(name) or classify_lender(name) == "telecom":
                 return True
             return any(pat in n for pat in NON_FINANCIAL_PATTERNS)
 
