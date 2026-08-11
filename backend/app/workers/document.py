@@ -110,14 +110,23 @@ def generate_documents(self, job_id: int):
 
         lender_results = db.query(LenderResult).filter(LenderResult.job_id == job.id).all()
 
-        # Generate PDF assessment
+        # Decide which lenders get an LOC (viable) BEFORE rendering the assessment,
+        # so its "LOCs Generated" count and per-lender "LOC Generated" labels are
+        # correct. Previously the PDF was rendered first, so every lender still read
+        # loc_generated=False and the assessment always showed 0 LOCs. The LOC files
+        # themselves are written just below.
+        viable_results = [r for r in lender_results
+                          if r.traffic_light in ("GREEN", "AMBER") and not is_blocked(r.lender_name)]
+        for r in viable_results:
+            r.loc_generated = True
+
+        # Generate PDF assessment (now reflects the real LOC set)
         pdf_bytes = generate_assessment_pdf(schema, lender_results)
         assessment_key = f"outputs/{matter_ref}/{client_slug}_affordability_assessment.pdf"
         upload_bytes(settings.S3_BUCKET_OUTPUTS, assessment_key, pdf_bytes, "application/pdf")
         job.s3_assessment_key = assessment_key
 
         loc_count = 0
-        viable_results = [r for r in lender_results if r.traffic_light in ("GREEN", "AMBER") and not is_blocked(r.lender_name)]
         for result in viable_results:
             warnings = _loc_preflight(schema, result)
             if warnings:
