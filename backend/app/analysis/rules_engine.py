@@ -195,7 +195,7 @@ def analyse_lender(
                       )})
 
     if insolvency_records:
-        score += 10
+        score += 20
         types_str = ", ".join(
             sorted({d.get("record_type", "PUBLIC_RECORD").replace("_", " ").title()
                     for d in insolvency_records})
