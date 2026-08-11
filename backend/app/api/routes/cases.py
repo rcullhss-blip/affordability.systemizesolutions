@@ -43,6 +43,9 @@ def list_cases(skip: int = 0, limit: int = 50, db: Session = Depends(get_db)):
     rows = (
         db.query(Case, Job)
         .outerjoin(Job, Case.job_id == Job.id)
+        # Cases that belong to a tagged bulk run (e.g. Woodville) appear as a single
+        # batch on the Batches tab, not scattered here.
+        .filter(Case.partner_batch_id.is_(None))
         .order_by(Case.created_at.desc())
         .offset(skip)
         .limit(limit)
@@ -53,15 +56,17 @@ def list_cases(skip: int = 0, limit: int = 50, db: Session = Depends(get_db)):
 
 @router.get("/stats/summary")
 def cases_summary(db: Session = Depends(get_db)):
-    total = db.query(func.count(Case.id)).scalar() or 0
-    sent = db.query(func.count(Case.id)).filter(Case.outcome_sent.is_(True)).scalar() or 0
-    failed = db.query(func.count(Case.id)).filter(Case.status == "OUTCOME_FAILED").scalar() or 0
+    # Single (non-batch) cases only — bulk-run cases are summarised on the Batches tab.
+    _single = Case.partner_batch_id.is_(None)
+    total = db.query(func.count(Case.id)).filter(_single).scalar() or 0
+    sent = db.query(func.count(Case.id)).filter(_single, Case.outcome_sent.is_(True)).scalar() or 0
+    failed = db.query(func.count(Case.id)).filter(_single, Case.status == "OUTCOME_FAILED").scalar() or 0
     # LOCs delivered to the PCP system: generated LOCs on cases whose outcome was sent.
     locs_sent = (
         db.query(func.count(LenderResult.id))
         .join(Job, LenderResult.job_id == Job.id)
         .join(Case, Case.job_id == Job.id)
-        .filter(LenderResult.loc_generated.is_(True), Case.outcome_sent.is_(True))
+        .filter(LenderResult.loc_generated.is_(True), Case.outcome_sent.is_(True), _single)
         .scalar() or 0
     )
     return {

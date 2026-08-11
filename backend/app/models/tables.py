@@ -16,6 +16,9 @@ class Batch(Base):
     name: Mapped[str] = mapped_column(String(255))
     # Instructing firm — selects the LOC letterhead/branding (first_legal | barings)
     firm: Mapped[str] = mapped_column(String(50), default="first_legal", server_default="first_legal")
+    # Partner bulk-run id (e.g. a Woodville batch_id) — all its /irl-case cases
+    # group into this one Batch so it runs as a single batch, not scattered cases.
+    partner_batch_id: Mapped[Optional[str]] = mapped_column(String(100), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     total_reports: Mapped[int] = mapped_column(Integer, default=0)
     processed: Mapped[int] = mapped_column(Integer, default=0)

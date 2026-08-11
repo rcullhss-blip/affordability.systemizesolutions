@@ -10,7 +10,7 @@ from app.core.database import get_db
 from app.core.config import settings
 from app.core.s3 import generate_presigned_url
 from app.core.lender_blocklist import is_blocked
-from app.models.tables import Batch, Job, Client, LenderResult
+from app.models.tables import Batch, Job, Client, LenderResult, Case
 from app.models.enums import JobStatus
 
 _FALLBACK_BASE = "http://localhost:8000"
@@ -179,8 +179,10 @@ def export_tracker_csv(batch_id: int, request: Request, db: Session = Depends(ge
             Client.name, Client.dob, Client.address,
             ndp("client", "email"), ndp("client", "phone"),
             ndp("client", "name"), ndp("client", "dob"), ndp("client", "address"),
+            Case.lead_reference,
         )
         .outerjoin(Client, Client.id == Job.client_id)
+        .outerjoin(Case, Case.job_id == Job.id)
         .where(Job.batch_id == batch_id, Job.status == "COMPLETE")
         .order_by(Job.created_at.asc())
     ).all()
@@ -205,24 +207,27 @@ def export_tracker_csv(batch_id: int, request: Request, db: Session = Depends(ge
 
     def stream():
         yield _line([
+            "Client Reference",
             "Timestamp", "Title", "First Name", "Surname", "Date of Birth", "Email", "Phone",
             "Residence 1", "Residence 2", "Residence 3", "Postal Code",
             "Defendant", "Analysis Status", "Case Status",
             "Credit Report", "Assessment PDF", "Letter of Claim",
         ])
         for (jid, created, raw_key, assess_key, c_name, c_dob, c_addr,
-             email, phone, nd_name, nd_dob, nd_addr) in job_rows:
+             email, phone, nd_name, nd_dob, nd_addr, lead_ref) in job_rows:
             ts = created.strftime("%d/%m/%Y %H:%M") if created else ""
             title, first_name, surname = _split_name((c_name or "") or (nd_name or ""))
             dob = (str(c_dob) if c_dob else "") or (nd_dob or "")
             res1, res2, res3, postcode = _split_address((c_addr or "") or (nd_addr or ""))
             report_url     = _file_url(RAW, raw_key, base_url)
             assessment_url = _file_url(OUTB, assess_key, base_url)
+            ref = lead_ref or ""
             these = lrs.get(jid, [])
             locs = [(l, tl, k) for (l, tl, g, k) in these if g and k]
             if locs:
                 for lender, tl, k in locs:
                     yield _line([
+                        ref,
                         ts, title, first_name, surname, dob, email or "", phone or "",
                         res1, res2, res3, postcode,
                         lender, _TL_LABELS.get((tl or "").upper(), ""), "LOC Generated",
@@ -232,6 +237,7 @@ def export_tracker_csv(batch_id: int, request: Request, db: Session = Depends(ge
                 all_blocked = bool(these) and all(is_blocked(l) for (l, _, _, _) in these)
                 case_status = "No Viable Defendant" if all_blocked else "No Viable Claim"
                 yield _line([
+                    ref,
                     ts, title, first_name, surname, dob, email or "", phone or "",
                     res1, res2, res3, postcode, "", "", case_status,
                     report_url, assessment_url, "",
@@ -245,3 +251,14 @@ def export_tracker_csv(batch_id: int, request: Request, db: Session = Depends(ge
         media_type="text/csv",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+@router.get("/by-partner/{partner_batch_id}/export/tracker")
+def export_tracker_by_partner(partner_batch_id: str, request: Request, db: Session = Depends(get_db)):
+    """Tracker CSV for a partner bulk run (e.g. Woodville), looked up by the
+    partner's OWN batch_id — so they can pull our tracker without knowing our
+    internal batch id."""
+    batch = db.query(Batch).filter(Batch.partner_batch_id == partner_batch_id).first()
+    if not batch:
+        raise HTTPException(status_code=404, detail="No batch found for that partner batch id")
+    return export_tracker_csv(batch.id, request, db)

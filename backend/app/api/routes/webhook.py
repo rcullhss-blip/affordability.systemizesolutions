@@ -126,16 +126,30 @@ async def ingest_irl_case(
     s3_key = f"raw/irl-case/{uuid.uuid4()}/{lead_reference}.json"
     upload_bytes(settings.S3_BUCKET_RAW, s3_key, json.dumps(payload).encode("utf-8"))
 
-    batch = db.query(Batch).filter(Batch.name == IRL_CASES_BATCH).first()
-    if not batch:
-        batch = Batch(name=IRL_CASES_BATCH, total_reports=0)
-        db.add(batch)
-        db.flush()
-    batch.total_reports = (batch.total_reports or 0) + 1
-
+    source = payload.get("source") or "boshhh"
     # Destination solicitor brand — selects the LOC letterhead (per-case via job.firm).
     destination = payload.get("destination") or {}
     brand_id = destination.get("brand_id")
+    batch_marker = payload.get("batch_id")
+
+    # A tagged bulk run (e.g. Woodville, batch_id present) groups all its cases into
+    # ONE dedicated Batch so it lands as a single batch on the Batches tab and can be
+    # exported as one tracker. Untagged single cases share the rolling irl-cases batch.
+    if batch_marker:
+        batch = db.query(Batch).filter(Batch.partner_batch_id == batch_marker).first()
+        if not batch:
+            batch = Batch(name=f"{source.title()} — {batch_marker}",
+                          firm=brand_id or "first_legal",
+                          partner_batch_id=batch_marker, total_reports=0)
+            db.add(batch)
+            db.flush()
+    else:
+        batch = db.query(Batch).filter(Batch.name == IRL_CASES_BATCH).first()
+        if not batch:
+            batch = Batch(name=IRL_CASES_BATCH, total_reports=0)
+            db.add(batch)
+            db.flush()
+    batch.total_reports = (batch.total_reports or 0) + 1
 
     job = Job(batch_id=batch.id, s3_raw_key=s3_key, status="PENDING", firm=brand_id)
     db.add(job)
