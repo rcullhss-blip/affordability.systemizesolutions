@@ -2,7 +2,7 @@ import csv
 import io
 import re
 from datetime import datetime
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session, selectinload
 from sqlalchemy import select, func
@@ -12,6 +12,33 @@ from app.core.s3 import generate_presigned_url
 from app.core.lender_blocklist import is_blocked
 from app.models.tables import Batch, Job, Client, LenderResult, Case
 from app.models.enums import JobStatus
+from app.api.routes.webhook import _require_irl_key
+
+# Job statuses that mean the job will not change again. A batch is "ready" to
+# export once none of its jobs are in a non-terminal (still-processing) state.
+_TERMINAL_JOB_STATUSES = (JobStatus.COMPLETE.value, JobStatus.FAILED.value)
+
+
+def _batch_is_ready(db: Session, batch: Batch) -> bool:
+    """True once the whole partner batch has finished processing — i.e. at least
+    one job exists and no job is still in a non-terminal (in-flight) state.
+
+    Note: `total_reports` is a running count that increments as each case is
+    ingested, so this gate only means "everything ingested so far has finished".
+    Partners must therefore poll only AFTER they have finished dispatching the
+    whole batch — a pull mid-dispatch could momentarily look ready."""
+    total_created = db.execute(
+        select(func.count(Job.id)).where(Job.batch_id == batch.id)
+    ).scalar_one()
+    if total_created == 0 or total_created < (batch.total_reports or 0):
+        return False
+    in_flight = db.execute(
+        select(func.count(Job.id)).where(
+            Job.batch_id == batch.id,
+            Job.status.notin_(_TERMINAL_JOB_STATUSES),
+        )
+    ).scalar_one()
+    return in_flight == 0
 
 _FALLBACK_BASE = "http://localhost:8000"
 
@@ -254,11 +281,27 @@ def export_tracker_csv(batch_id: int, request: Request, db: Session = Depends(ge
 
 
 @router.get("/by-partner/{partner_batch_id}/export/tracker")
-def export_tracker_by_partner(partner_batch_id: str, request: Request, db: Session = Depends(get_db)):
+def export_tracker_by_partner(
+    partner_batch_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+    _auth=Depends(_require_irl_key),
+):
     """Tracker CSV for a partner bulk run (e.g. Woodville), looked up by the
     partner's OWN batch_id — so they can pull our tracker without knowing our
-    internal batch id."""
+    internal batch id.
+
+    Auth: same `X-API-Key` (IRL_CASE_API_KEY / sk_irlcase_*) used on /irl-case.
+
+    Readiness contract:
+      * unknown partner batch id        -> 404
+      * batch found but still processing -> 200 with an EMPTY body (poll again)
+      * batch finished                   -> 200 text/csv tracker
+    Partners treat an empty 200 body as "still processing, retry later"."""
     batch = db.query(Batch).filter(Batch.partner_batch_id == partner_batch_id).first()
     if not batch:
         raise HTTPException(status_code=404, detail="No batch found for that partner batch id")
+    if not _batch_is_ready(db, batch):
+        # Still processing — empty body signals "not ready, retry later".
+        return Response(status_code=200, media_type="text/csv", content=b"")
     return export_tracker_csv(batch.id, request, db)
