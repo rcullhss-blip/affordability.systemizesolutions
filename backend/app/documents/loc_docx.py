@@ -62,6 +62,20 @@ FIRM_CONFIGS = {
         "closing": "Yours faithfully,",
         "signoff": ["Accord Solicitors", "Irresponsible Lending Department"],
     },
+    "ryans": {
+        "name":    "Ryans Solicitors",
+        "address": "No 1 Tithebarn House, Tithebarn Street, Liverpool, L2 2NZ",
+        "logo":    os.path.join(_DOC_DIR, "ryans-logo.png"),
+        "logo_w":  4.6,  # cm — wide horizontal wordmark (887x205, ~4.3:1)
+        "footer1": ("Registered Office Address: Military House, 24 Castle Street, Chester, "
+                    "England, CH1 2DS. Postal Address: No 1 Tithebarn House, Tithebarn Street, "
+                    "Liverpool, L2 2NZ."),
+        "footer2": ("Company Registration Number: 08374353. Ryans Solicitors Ltd is authorised "
+                    "and regulated by the Solicitors Regulation Authority under registration "
+                    "number 596926."),
+        "closing": "Yours faithfully,",
+        "signoff": ["Ryans Solicitors", "No 1 Tithebarn House, Tithebarn Street, Liverpool, L2 2NZ"],
+    },
 }
 
 

@@ -10,9 +10,11 @@ from app.core.database import get_db
 from app.core.config import settings
 from app.core.s3 import generate_presigned_url
 from app.core.lender_blocklist import is_blocked
+from pydantic import BaseModel
 from app.models.tables import Batch, Job, Client, LenderResult, Case
 from app.models.enums import JobStatus
 from app.api.routes.webhook import _require_irl_key
+from app.workers.fetch import fetch_and_process
 
 # Job statuses that mean the job will not change again. A batch is "ready" to
 # export once none of its jobs are in a non-terminal (still-processing) state.
@@ -305,3 +307,67 @@ def export_tracker_by_partner(
         # Still processing — empty body signals "not ready, retry later".
         return Response(status_code=200, media_type="text/csv", content=b"")
     return export_tracker_csv(batch.id, request, db)
+
+
+class ReprocessAsFirm(BaseModel):
+    # Identify the source batch by our internal id OR the partner's batch id.
+    source_batch_id: int | None = None
+    source_partner_batch_id: str | None = None
+    firm: str = "first_legal"                 # target letterhead, e.g. "ryans"
+    new_batch_name: str | None = None
+    new_partner_batch_id: str | None = None   # so the result is pullable via by-partner tracker
+
+
+@router.post("/reprocess-as-firm", dependencies=[Depends(_require_irl_key)])
+def reprocess_as_firm(body: ReprocessAsFirm, db: Session = Depends(get_db)):
+    """Re-run an existing batch's reports under a DIFFERENT solicitor firm, as a
+    fresh batch. Clones each source job's `s3_raw_key` (the retained raw report)
+    into new PENDING jobs tagged with the target firm and re-enqueues the full
+    pipeline — so LOCs regenerate with the new letterhead. The source batch is
+    left untouched. `normalised_data` having been purged post-delivery is fine:
+    fetch_and_process re-fetches from the raw S3 object."""
+    if body.source_batch_id:
+        src = db.get(Batch, body.source_batch_id)
+    elif body.source_partner_batch_id:
+        src = db.query(Batch).filter(Batch.partner_batch_id == body.source_partner_batch_id).first()
+    else:
+        raise HTTPException(status_code=400, detail="source_batch_id or source_partner_batch_id required")
+    if not src:
+        raise HTTPException(status_code=404, detail="source batch not found")
+
+    raw_keys = db.execute(
+        select(Job.s3_raw_key)
+        .where(Job.batch_id == src.id, Job.s3_raw_key.isnot(None))
+        .order_by(Job.created_at.asc())
+    ).scalars().all()
+    if not raw_keys:
+        raise HTTPException(status_code=404, detail="source batch has no retained raw reports to reprocess")
+
+    new_batch = Batch(
+        name=body.new_batch_name or f"{src.name} — {body.firm} rerun",
+        firm=body.firm,
+        partner_batch_id=body.new_partner_batch_id,
+        total_reports=len(raw_keys),
+    )
+    db.add(new_batch)
+    db.commit()
+    db.refresh(new_batch)
+
+    job_ids: list[int] = []
+    for raw_key in raw_keys:
+        j = Job(batch_id=new_batch.id, s3_raw_key=raw_key, status="PENDING", firm=body.firm)
+        db.add(j)
+        db.flush()
+        job_ids.append(j.id)
+    db.commit()
+
+    for jid in job_ids:
+        fetch_and_process.apply_async(args=[jid], queue="fetch")
+
+    return {
+        "new_batch_id": new_batch.id,
+        "new_partner_batch_id": new_batch.partner_batch_id,
+        "firm": body.firm,
+        "reports": len(job_ids),
+        "status": "processing",
+    }
