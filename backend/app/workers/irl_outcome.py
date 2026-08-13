@@ -35,7 +35,14 @@ def _build_documents(job: Job, lenders: list) -> list:
     fetches + stores these on receipt (URLs are short-lived, 7-day signed)."""
     docs = []
     try:
-        if job.s3_raw_key:
+        # Credit report as a rendered PDF (outputs bucket). Fall back to the raw
+        # report JSON only for older cases generated before PDF rendering existed.
+        if job.s3_credit_report_key:
+            docs.append({
+                "type": "credit_report",
+                "url": get_download_url(settings.S3_BUCKET_OUTPUTS, job.s3_credit_report_key),
+            })
+        elif job.s3_raw_key:
             docs.append({
                 "type": "credit_report",
                 "url": get_download_url(settings.S3_BUCKET_RAW, job.s3_raw_key),
