@@ -9,6 +9,7 @@ from app.analysis.lender_classifier import is_possible_intermediary
 from app.models.tables import Job, LenderResult, Batch
 from app.models.enums import JobStatus, TrafficLight
 from app.documents.assessment_pdf import generate_assessment_pdf
+from app.documents.credit_report_pdf import generate_credit_report_pdf
 from app.documents.loc_docx import generate_loc_docx
 from app.workers.deliver import deliver_outputs
 
@@ -125,6 +126,16 @@ def generate_documents(self, job_id: int):
         assessment_key = f"outputs/{matter_ref}/{client_slug}_affordability_assessment.pdf"
         upload_bytes(settings.S3_BUCKET_OUTPUTS, assessment_key, pdf_bytes, "application/pdf")
         job.s3_assessment_key = assessment_key
+
+        # Credit report rendered to PDF (so the partner tracker links a PDF, not
+        # the raw JSON). Best-effort: a render failure must not fail the job.
+        try:
+            cr_bytes = generate_credit_report_pdf(schema)
+            credit_report_key = f"outputs/{matter_ref}/{client_slug}_credit_report.pdf"
+            upload_bytes(settings.S3_BUCKET_OUTPUTS, credit_report_key, cr_bytes, "application/pdf")
+            job.s3_credit_report_key = credit_report_key
+        except Exception:
+            log.exception("Credit-report PDF generation failed for job %s", job.id)
 
         loc_count = 0
         for result in viable_results:

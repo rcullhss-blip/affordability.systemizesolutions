@@ -58,6 +58,7 @@ class Job(Base):
     source_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     s3_raw_key: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     s3_assessment_key: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    s3_credit_report_key: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     normalised_data: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

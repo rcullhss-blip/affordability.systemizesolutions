@@ -205,6 +205,7 @@ def export_tracker_csv(batch_id: int, request: Request, db: Session = Depends(ge
     job_rows = db.execute(
         select(
             Job.id, Job.created_at, Job.s3_raw_key, Job.s3_assessment_key,
+            Job.s3_credit_report_key,
             Client.name, Client.dob, Client.address,
             ndp("client", "email"), ndp("client", "phone"),
             ndp("client", "name"), ndp("client", "dob"), ndp("client", "address"),
@@ -242,13 +243,16 @@ def export_tracker_csv(batch_id: int, request: Request, db: Session = Depends(ge
             "Defendant", "Analysis Status", "Case Status",
             "Credit Report", "Assessment PDF", "Letter of Claim",
         ])
-        for (jid, created, raw_key, assess_key, c_name, c_dob, c_addr,
+        for (jid, created, raw_key, assess_key, credit_key, c_name, c_dob, c_addr,
              email, phone, nd_name, nd_dob, nd_addr, lead_ref) in job_rows:
             ts = created.strftime("%d/%m/%Y %H:%M") if created else ""
             title, first_name, surname = _split_name((c_name or "") or (nd_name or ""))
             dob = (str(c_dob) if c_dob else "") or (nd_dob or "")
             res1, res2, res3, postcode = _split_address((c_addr or "") or (nd_addr or ""))
-            report_url     = _file_url(RAW, raw_key, base_url)
+            # Prefer the generated credit-report PDF (outputs bucket); fall back to
+            # the raw report JSON for older jobs that predate PDF generation.
+            report_url     = (_file_url(OUTB, credit_key, base_url) if credit_key
+                              else _file_url(RAW, raw_key, base_url))
             assessment_url = _file_url(OUTB, assess_key, base_url)
             ref = lead_ref or ""
             these = lrs.get(jid, [])
