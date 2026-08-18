@@ -83,7 +83,10 @@ def cases_summary(db: Session = Depends(get_db)):
 
 class ReprocessCasesAsFirm(BaseModel):
     lead_references: list[str]
-    firm: str = "ryans"          # target letterhead, e.g. "ryans"
+    # Target letterhead, e.g. "ryans". Omit (null) to RE-SCORE IN PLACE — each case
+    # keeps its existing firm; use this to re-run cases through updated scoring/parsing
+    # without changing branding.
+    firm: str | None = None
 
 
 @router.post("/reprocess-as-firm", dependencies=[Depends(_require_irl_key)])
@@ -103,9 +106,7 @@ def reprocess_cases_as_firm(body: ReprocessCasesAsFirm, db: Session = Depends(ge
     set of single hub cases — e.g. move 44 cases onto the Ryans letterhead — where
     the batch-level /batches/reprocess-as-firm would sweep in unrelated cases.
     """
-    firm = (body.firm or "").strip().lower()
-    if not firm:
-        raise HTTPException(status_code=422, detail="firm is required")
+    firm = (body.firm or "").strip().lower()   # "" -> re-score in place (keep each case's firm)
     # De-dupe while preserving order; a repeated lead_reference must re-run once.
     refs = list(dict.fromkeys(r for r in (body.lead_references or []) if r))
     if not refs:
@@ -124,20 +125,25 @@ def reprocess_cases_as_firm(body: ReprocessCasesAsFirm, db: Session = Depends(ge
             results.append({"lead_reference": ref, "status": "no_raw_report"})
             continue
 
+        # Target firm: the requested one, else keep the case's existing branding
+        # (re-score in place) rather than defaulting everything to first_legal.
+        target_firm = firm or (case.destination_brand_id
+                               or (old_job.firm if old_job else None) or "first_legal")
+
         # New job under the target firm, in the same batch as before so counts stay
         # coherent; the full pipeline re-runs from the retained raw report.
         new_job = Job(
             batch_id=(old_job.batch_id if old_job else None),
             s3_raw_key=raw_key,
             status="PENDING",
-            firm=firm,
+            firm=target_firm,
         )
         db.add(new_job)
         db.flush()
 
         # Re-point the case at the new job and re-arm the outcome postback.
         case.job_id = new_job.id
-        case.destination_brand_id = firm
+        case.destination_brand_id = target_firm
         case.outcome = None
         case.outcome_sent = False
         case.outcome_sent_at = None
@@ -147,7 +153,8 @@ def reprocess_cases_as_firm(body: ReprocessCasesAsFirm, db: Session = Depends(ge
         db.flush()
 
         queued.append(new_job.id)
-        results.append({"lead_reference": ref, "status": "reprocessing", "job_id": new_job.id})
+        results.append({"lead_reference": ref, "status": "reprocessing",
+                        "job_id": new_job.id, "firm": target_firm})
 
     db.commit()
 
@@ -156,7 +163,7 @@ def reprocess_cases_as_firm(body: ReprocessCasesAsFirm, db: Session = Depends(ge
         fetch_and_process.apply_async(args=[jid], queue="fetch")
 
     return {
-        "firm": firm,
+        "firm": firm or "(in place)",
         "requested": len(refs),
         "reprocessing": len(queued),
         "results": results,

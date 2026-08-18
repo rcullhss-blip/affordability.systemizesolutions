@@ -30,6 +30,7 @@ _CONFIDENCE_WEIGHTS = {
     "HARD_SEARCHES":              2,
     "ELEVATED_UTILISATION":       2,
     "MISSED_PAYMENT":             1,
+    "MINOR_ARREARS":              1,
     "POSSIBLE_DEBT_PURCHASER":    0,  # Informational — does not strengthen claim
 }
 _CONFIDENCE_MAX = 14  # max realistic weight for a single lender (e.g. 2×CRITICAL + 3×HIGH)
@@ -120,21 +121,34 @@ def analyse_lender(
         status = (acc.get("status") or "").upper()
         # Only count on non-defaulted accounts; exclude U/N/S codes
         if status not in ("DEFAULT", "DEFAULTED"):
-            missed = sum(1 for p in payment_history if str(p).upper() in {"D", "3", "4", "5", "6"})
-            if missed >= 3:
-                score += 25
-                flags.append({"type": "REPEATED_MISSED_PAYMENTS", "severity": "HIGH",
-                              "description": (
-                                  f"Persistent adverse repayment conduct on {lender_name} account — "
-                                  f"multiple payment arrears markers on file at time of lending"
-                              )})
-            elif missed >= 1:
-                score += 10
-                flags.append({"type": "MISSED_PAYMENT", "severity": "MEDIUM",
-                              "description": (
-                                  f"Adverse payment markers recorded on {lender_name} account — "
-                                  f"ongoing signs of financial distress"
-                              )})
+            # Arrears scored linearly: +5 points for EACH reporting month the account
+            # was in arrears (CAIS markers 1-6, plus any in-history default marker),
+            # capped at 30 per account. This now counts minor (1-2 month) arrears that
+            # were previously ignored entirely, while the cap stops one account from
+            # dominating the score.
+            arrears_months = sum(1 for p in payment_history
+                                 if str(p).upper() in {"D", "1", "2", "3", "4", "5", "6"})
+            if arrears_months:
+                score += min(arrears_months * 5, 30)
+                heavy = sum(1 for p in payment_history if str(p).upper() in {"D", "3", "4", "5", "6"})
+                if heavy >= 3 or arrears_months >= 6:
+                    flags.append({"type": "REPEATED_MISSED_PAYMENTS", "severity": "HIGH",
+                                  "description": (
+                                      f"Persistent payment arrears on {lender_name} account — "
+                                      f"{arrears_months} months in arrears on file at time of lending"
+                                  )})
+                elif heavy >= 1:
+                    flags.append({"type": "MISSED_PAYMENT", "severity": "MEDIUM",
+                                  "description": (
+                                      f"Payment arrears recorded on {lender_name} account — "
+                                      f"{arrears_months} months in arrears, signs of financial distress"
+                                  )})
+                else:
+                    flags.append({"type": "MINOR_ARREARS", "severity": "MEDIUM",
+                                  "description": (
+                                      f"Repeated minor arrears (1-2 months) on {lender_name} account "
+                                      f"across {arrears_months} months — difficulty short of default"
+                                  )})
 
         # --- Active adverse at time of lending (fire once per lender) ---
         if opened and not _adverse_fired:
@@ -214,11 +228,23 @@ def analyse_lender(
                       "description": f"Default registered by {lender_name} — agreement terminated in arrears"})
 
     # --- Debt stacking (multiple active accounts at same time) ---
+    # Scaled by the number of ACTIVE concurrent facilities: juggling many live
+    # debts at once (using one to service another) is a strong affordability
+    # signal, so heavier concurrent exposure now scores materially higher than a
+    # flat marker. (Was a flat +10 for >=5 total accounts.)
     all_accounts = full_schema.get("accounts", [])
     active_count = sum(1 for a in all_accounts if (a.get("status") or "").upper() == "ACTIVE")
     if len(all_accounts) >= 5:
-        score += 10
-        flags.append({"type": "DEBT_STACKING", "severity": "MEDIUM",
+        if active_count >= 12:
+            stack_score, sev = 25, "HIGH"
+        elif active_count >= 8:
+            stack_score, sev = 20, "HIGH"
+        elif active_count >= 5:
+            stack_score, sev = 15, "MEDIUM"
+        else:
+            stack_score, sev = 10, "MEDIUM"
+        score += stack_score
+        flags.append({"type": "DEBT_STACKING", "severity": sev,
                       "description": (
                           f"{active_count} active credit facilities identified at date of lending — "
                           f"evidence of debt accumulation across multiple lenders"

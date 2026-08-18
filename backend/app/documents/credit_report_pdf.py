@@ -63,6 +63,27 @@ def _txt(v, limit=None):
     return s[:limit] if limit else s
 
 
+# Experian application-type codes seen on previous-search records -> readable label.
+# Unknown codes fall through to the raw code (never invent a label on a legal doc).
+_APP_TYPE_LABELS = {
+    "HP": "Hire Purchase", "CC": "Credit Card", "CH": "Charge Card",
+    "MG": "Mortgage", "CA": "Current Account", "MO": "Mail Order",
+    "PL": "Personal Loan", "UL": "Unsecured Loan", "SL": "Secured Loan",
+    "LO": "Loan", "OD": "Overdraft", "BL": "Budget Account",
+    "TL": "Telecommunications", "RV": "Revolving Credit", "FL": "Fixed Loan",
+}
+
+
+def _search_label(s):
+    """What the previous search was for, most-specific-first: the application-type
+    code (mapped to a label where known), else the generic subtype."""
+    code = (s.get("application_type") or "").strip().upper()
+    if code:
+        return _APP_TYPE_LABELS.get(code, code)
+    sub = (s.get("search_subtype") or s.get("search_type") or "").strip()
+    return sub.title() if sub else "Credit Application"
+
+
 def _fmt_date(v):
     if not v:
         return "—"
@@ -259,14 +280,18 @@ def generate_credit_report_pdf(schema: dict) -> bytes:
     # ── Searches ──
     story.append(_section("Credit Searches"))
     if searches:
-        s_rows = [[Paragraph(h, head_st) for h in ["Date", "Searched By", "Type"]]]
+        s_rows = [[Paragraph(h, head_st) for h in ["Date", "Type", "Amount", "Searched By"]]]
         for s in searches[:40]:
+            label = _search_label(s)
+            term = _txt(s.get("term"))
+            type_disp = f"{label} · {term}mo" if term else label
             s_rows.append([
                 Paragraph(_fmt_date(s.get("date")), cell_st),
-                Paragraph(_txt(s.get("lender"), 44) or "—", cell_st),
-                Paragraph((_txt(s.get("search_subtype")) or _txt(s.get("search_type")) or "—").title(), cell_st),
+                Paragraph(_txt(type_disp, 30), cell_st),
+                Paragraph(_money(s.get("amount")) if s.get("amount") else "—", cellr_st),
+                Paragraph(_txt(s.get("lender"), 28) or "—", cell_st),
             ])
-        stbl = Table(s_rows, colWidths=[W*0.18, W*0.56, W*0.26], repeatRows=1)
+        stbl = Table(s_rows, colWidths=[W*0.18, W*0.34, W*0.18, W*0.30], repeatRows=1)
         stbl.setStyle(TableStyle([
             ("BACKGROUND", (0, 0), (-1, 0), C_SLATE),
             ("ROWBACKGROUNDS", (0, 1), (-1, -1), [C_WHITE, C_ROW_ALT]),

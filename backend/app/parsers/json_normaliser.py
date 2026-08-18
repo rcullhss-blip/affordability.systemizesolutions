@@ -729,28 +729,73 @@ def _expb_client(data: dict, out: dict) -> dict:
     }
 
 
+def _expb_appdate(v) -> str:
+    """Experian structured date {ccyy, mm, dd} -> 'YYYY-MM-DD' (mm/dd default to 01).
+    Falls back to _fmt_date for ISO/string dates. Application searches carry the
+    date as this object, which _fmt_date alone cannot read."""
+    if isinstance(v, dict):
+        y = v.get("ccyy")
+        if not y:
+            return ""
+        try:
+            return f"{int(y):04d}-{int(v.get('mm') or 1):02d}-{int(v.get('dd') or 1):02d}"
+        except (TypeError, ValueError):
+            return ""
+    return _fmt_date(v)
+
+
 def _expb_searches(cd: dict) -> list:
-    """CAPS (credit application searches) feed the hard-search scoring. The live
-    field shape is confirmed against a real sample during integration; parse
-    defensively so an unexpected shape yields [] rather than a crash."""
+    """Credit-application (hard) searches — feed the hard-search affordability
+    signal (rules_engine) and the credit-report PDF. Two shapes appear in
+    Bosh/Experian payloads and BOTH are read here:
+      * cAPS[].cAPSDetails[]                       (older sample), and
+      * previousApplication[].prevApplnDetails[]   (the live Bosh variant, whose
+        date is an {ccyy,mm,dd} object and whose company name is usually null).
+    A row is kept on the date alone, so count + date still show with a blank name.
+    Parse defensively: an unexpected shape yields [] rather than a crash."""
     searches = []
+
+    def _add(date_v, lender, app_type="", amount=None, term=""):
+        if date_v or lender:
+            # search_subtype stays "APPLICATION" so the affordability engine still
+            # recognises these as application searches; application_type / amount /
+            # term carry the richer detail for the credit-report PDF.
+            searches.append({"date": date_v, "lender": (lender or "").strip(),
+                             "search_type": "HARD", "search_subtype": "APPLICATION",
+                             "application_type": (str(app_type or "").strip()),
+                             "amount": amount,
+                             "term": (str(term or "").strip().lstrip("0"))})
+
+    # Shape A — cAPS[].cAPSDetails[]
     caps = cd.get("cAPS")
-    if not isinstance(caps, list):
-        return searches
-    for blk in caps:
+    for blk in (caps if isinstance(caps, list) else []):
         details = (blk or {}).get("cAPSDetails") or (blk or {}).get("capsDetails") or []
         if isinstance(details, dict):
             details = [details]
-        for s in details if isinstance(details, list) else []:
-            if not isinstance(s, dict):
-                continue
-            date_v = _fmt_date(s.get("searchDate") or s.get("date") or s.get("dateOfSearch"))
-            lender = (s.get("supplyCompanyName") or s.get("companyName") or s.get("supplierName") or "").strip()
-            if date_v or lender:
-                searches.append({
-                    "date": date_v, "lender": lender,
-                    "search_type": "HARD", "search_subtype": "APPLICATION",
-                })
+        for s in (details if isinstance(details, list) else []):
+            if isinstance(s, dict):
+                _add(_expb_appdate(s.get("searchDate") or s.get("date") or s.get("dateOfSearch")),
+                     s.get("supplyCompanyName") or s.get("companyName") or s.get("supplierName") or "",
+                     app_type=s.get("applicationType") or s.get("searchType") or "",
+                     amount=_expb_money(s.get("amount")),
+                     term=s.get("term") or "")
+
+    # Shape B — previousApplication[].prevApplnDetails[] (live Bosh variant)
+    prev = cd.get("previousApplication")
+    for blk in (prev if isinstance(prev, list) else []):
+        details = ((blk or {}).get("prevApplnDetails")
+                   or (blk or {}).get("previousAppINDetails")
+                   or (blk or {}).get("prevApplicationDetails") or [])
+        if isinstance(details, dict):
+            details = [details]
+        for s in (details if isinstance(details, list) else []):
+            if isinstance(s, dict):
+                _add(_expb_appdate(s.get("applicationDate") or s.get("searchDate") or s.get("date")),
+                     s.get("supplyCompanyName") or s.get("companyName") or s.get("supplierName") or "",
+                     app_type=s.get("applicationType") or "",
+                     amount=_expb_money(s.get("amount")),
+                     term=s.get("term") or "")
+
     return searches
 
 
