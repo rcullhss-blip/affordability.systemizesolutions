@@ -10,15 +10,21 @@ outcome has not yet been delivered, POST the result to the PCP platform's
   - capped so a permanently-failing case surfaces as OUTCOME_FAILED instead of
     hammering the endpoint forever.
 """
+import logging
 from datetime import datetime
 
 import httpx
+from sqlalchemy.orm import selectinload
 
 from app.core.celery_app import celery_app
 from app.core.database import SessionLocal
 from app.core.config import settings
-from app.core.storage import get_download_url
+from app.core.storage import get_download_url, upload_bytes
+from app.core.lender_blocklist import is_blocked
+from app.documents.tracker_csv import build_case_tracker_rows, rows_to_csv_bytes
 from app.models.tables import Case, Job, LenderResult
+
+log = logging.getLogger("irl_outcome")
 
 MAX_ATTEMPTS = 8      # after this a case is parked as OUTCOME_FAILED (requeue by resetting attempts)
 # Cases per tick. Raised for bulk partner runs (e.g. Woodville 100k) so per-client
@@ -29,39 +35,96 @@ BATCH_LIMIT = 500
 _ANALYSIS_STATUS = {"GREEN": "Strong", "AMBER": "Mid", "RED": "Weak"}
 
 
-def _build_documents(job: Job, lenders: list) -> list:
-    """Signed download URLs for the raw credit report, the assessment, and the
-    branded LOCs (one per lender) — the three tracker doc columns. The partner
-    fetches + stores these on receipt (URLs are short-lived, 7-day signed)."""
-    docs = []
+def _signed(bucket: str, key: str | None) -> str:
+    """A download URL valid long enough for the partner to fetch + store it.
+    7-day presigned in prod (AWS SigV4 max); a local proxy path in dev."""
+    if not key:
+        return ""
+    if settings.use_local_storage:
+        return get_download_url(bucket, key)
+    from app.core.s3 import generate_presigned_url
     try:
-        # Credit report as a rendered PDF (outputs bucket). Fall back to the raw
-        # report JSON only for older cases generated before PDF rendering existed.
-        if job.s3_credit_report_key:
-            docs.append({
-                "type": "credit_report",
-                "url": get_download_url(settings.S3_BUCKET_OUTPUTS, job.s3_credit_report_key),
-            })
-        elif job.s3_raw_key:
-            docs.append({
-                "type": "credit_report",
-                "url": get_download_url(settings.S3_BUCKET_RAW, job.s3_raw_key),
-            })
-        if job.s3_assessment_key:
-            docs.append({
-                "type": "affordability_assessment",
-                "url": get_download_url(settings.S3_BUCKET_OUTPUTS, job.s3_assessment_key),
-            })
-        for lr in lenders:
-            if lr.loc_generated and lr.s3_loc_key:
-                docs.append({
-                    "type": "irl_loc",
-                    "lender": lr.lender_name,
-                    "url": get_download_url(settings.S3_BUCKET_OUTPUTS, lr.s3_loc_key),
-                })
+        return generate_presigned_url(bucket, key, expires_in=604800)  # 7 days
     except Exception:
-        # Never let URL signing break the postback — retried next tick.
-        raise
+        return ""
+
+
+def _client_fields(case: Case, job: Job) -> dict:
+    """Client identity for the tracker. `job.normalised_data` is cleared at
+    completion, so the durable sources are the Client row (full name/dob/address)
+    with the denormalised Case fields as a fallback."""
+    client = getattr(job, "client", None)
+    name = (getattr(client, "name", None) or case.client_name or "")
+    dob = getattr(client, "dob", None) or case.client_dob
+    address = getattr(client, "address", None) or case.client_postcode or ""
+    return {
+        "name": name,
+        "dob": str(dob) if dob else "",
+        "address": address,
+        "email": "",   # not retained past completion (parity with batch tracker)
+        "phone": "",
+    }
+
+
+def _build_documents(case: Case, job: Job, lenders: list) -> list:
+    """Signed download URLs for the case documents the partner stores on receipt:
+    the credit report, the assessment, the branded LOCs (one per lender), and a
+    per-case tracker CSV in the Proclaim batch-tracker format. URLs are 7-day
+    signed. Best-effort per artefact — never let one missing file break delivery."""
+    docs = []
+
+    # Credit report as a rendered PDF (outputs bucket). Fall back to the raw
+    # report JSON only for older cases generated before PDF rendering existed.
+    if job.s3_credit_report_key:
+        report_url = _signed(settings.S3_BUCKET_OUTPUTS, job.s3_credit_report_key)
+    else:
+        report_url = _signed(settings.S3_BUCKET_RAW, job.s3_raw_key)
+    if report_url:
+        docs.append({"type": "credit_report", "url": report_url})
+
+    assessment_url = _signed(settings.S3_BUCKET_OUTPUTS, job.s3_assessment_key)
+    if assessment_url:
+        docs.append({"type": "affordability_assessment", "url": assessment_url})
+
+    loc_urls = {}  # s3_loc_key -> signed url (reused by the tracker CSV)
+    for lr in lenders:
+        if lr.loc_generated and lr.s3_loc_key:
+            url = _signed(settings.S3_BUCKET_OUTPUTS, lr.s3_loc_key)
+            loc_urls[lr.s3_loc_key] = url
+            docs.append({"type": "irl_loc", "lender": lr.lender_name, "url": url})
+
+    # ── Per-case tracker CSV (same columns Ryan's Proclaim reads for batches) ──
+    # One row per LOC/defendant. Best-effort: a tracker failure must not stop the
+    # assessment/LOCs/credit report from being delivered.
+    try:
+        ts = (job.completed_at or job.created_at)
+        ts = ts.strftime("%d/%m/%Y %H:%M") if ts else ""
+        rows = build_case_tracker_rows(
+            client_reference=case.lead_reference,
+            timestamp=ts,
+            **_client_fields(case, job),
+            lenders=[(lr.lender_name, lr.traffic_light, lr.loc_generated, lr.s3_loc_key)
+                     for lr in lenders],
+            is_blocked=is_blocked,
+            credit_report_url=report_url,
+            assessment_url=assessment_url,
+            loc_url_for=lambda k: loc_urls.get(k, ""),
+        )
+        csv_bytes = rows_to_csv_bytes(rows)
+        # Deterministic key so retries overwrite rather than pile up.
+        if job.s3_assessment_key:
+            tracker_key = job.s3_assessment_key.rsplit(
+                "_affordability_assessment.pdf", 1)[0] + "_affordability_tracker.csv"
+        else:
+            tracker_key = f"outputs/irl-case/{case.lead_reference}/affordability_tracker.csv"
+        upload_bytes(settings.S3_BUCKET_OUTPUTS, tracker_key, csv_bytes, "text/csv")
+        tracker_url = _signed(settings.S3_BUCKET_OUTPUTS, tracker_key)
+        if tracker_url:
+            docs.append({"type": "tracker_csv", "url": tracker_url})
+    except Exception:
+        log.exception("Tracker CSV build failed for case %s (delivery continues)",
+                      case.lead_reference)
+
     return docs
 
 
@@ -89,7 +152,7 @@ def _build_outcome(case: Case, job: Job, lenders: list) -> dict:
             }
             for lr in lenders
         ],
-        "documents": _build_documents(job, lenders),
+        "documents": _build_documents(case, job, lenders),
     }
 
 
@@ -104,6 +167,7 @@ def post_case_outcomes():
         rows = (
             db.query(Case, Job)
             .join(Job, Case.job_id == Job.id)
+            .options(selectinload(Job.client))   # tracker needs client name/address; avoid an N+1
             .filter(
                 Case.outcome_sent.is_(False),
                 Case.status != "OUTCOME_FAILED",

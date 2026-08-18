@@ -55,6 +55,14 @@ def _money(v):
         return "—"
 
 
+def _txt(v, limit=None):
+    """Coerce any value to a safe display string (reportlab Paragraphs and slicing
+    both require str). Guards against numeric/None field values in the normalised
+    report — the real-world cause of credit-report PDF render failures."""
+    s = "" if v is None else str(v)
+    return s[:limit] if limit else s
+
+
 def _fmt_date(v):
     if not v:
         return "—"
@@ -68,6 +76,10 @@ def _fmt_date(v):
 def _arrears_summary(ph):
     """Compact worst-status label from a payment_history list."""
     if not ph:
+        return "No history"
+    if isinstance(ph, str):          # tolerate "0123" as well as ["0","1",...]
+        ph = list(ph)
+    elif not isinstance(ph, (list, tuple)):
         return "No history"
     codes = [str(c).upper() for c in ph]
     if "D" in codes:
@@ -137,17 +149,21 @@ def generate_credit_report_pdf(schema: dict) -> bytes:
     today = date.today().strftime("%d %B %Y")
 
     client   = schema.get("client") or {}
-    accounts = schema.get("accounts") or []
-    defaults = [d for d in (schema.get("defaults") or [])]
-    searches = schema.get("searches") or []
+    if not isinstance(client, dict):
+        client = {}
+    # Only dict entries survive — a stray string/None in any of these lists would
+    # otherwise blow up the whole render (and silently fall back to raw JSON).
+    accounts = [a for a in (schema.get("accounts") or []) if isinstance(a, dict)]
+    defaults = [d for d in (schema.get("defaults") or []) if isinstance(d, dict)]
+    searches = [s for s in (schema.get("searches") or []) if isinstance(s, dict)]
 
-    name = client.get("name") or "Credit File"
+    name = _txt(client.get("name")) or "Credit File"
     dob  = _fmt_date(client.get("dob")) if client.get("dob") else "—"
-    addr = client.get("address") or "—"
+    addr = _txt(client.get("address")) or "—"
 
-    n_active  = sum(1 for a in accounts if (a.get("status") or "").upper() == "ACTIVE")
-    n_default = sum(1 for a in accounts if (a.get("status") or "").upper() == "DEFAULT")
-    public_records = [d for d in defaults if str(d.get("status") or "").upper() in ("CCJ", "INSOLVENCY")]
+    n_active  = sum(1 for a in accounts if _txt(a.get("status")).upper() == "ACTIVE")
+    n_default = sum(1 for a in accounts if _txt(a.get("status")).upper() == "DEFAULT")
+    public_records = [d for d in defaults if _txt(d.get("status")).upper() in ("CCJ", "INSOLVENCY")]
 
     body_st  = _S("bd", fontName="Helvetica", fontSize=8, textColor=C_BODY, leading=11)
     cell_st  = _S("cl", fontName="Helvetica", fontSize=7.5, textColor=C_TEXT, leading=10)
@@ -183,11 +199,12 @@ def generate_credit_report_pdf(schema: dict) -> bytes:
     rows = [[Paragraph(h, head_st) for h in
              ["Lender", "Type", "Opened", "Status", "Balance", "Limit", "Conduct"]]]
     for a in accounts:
-        st = (a.get("status") or "ACTIVE").upper()
+        st = (_txt(a.get("status")) or "ACTIVE").upper()
         txt, _bg = _STATUS.get(st, ("#475569", "#F1F5F9"))
+        acct_type = _txt(a.get("account_type"))
         rows.append([
-            Paragraph((a.get("lender") or "—")[:34], cell_st),
-            Paragraph(_ACCT_LABELS.get((a.get("account_type") or "").upper(), (a.get("account_type") or "—").title()), cell_st),
+            Paragraph(_txt(a.get("lender"), 34) or "—", cell_st),
+            Paragraph(_ACCT_LABELS.get(acct_type.upper(), acct_type.title() or "—"), cell_st),
             Paragraph(_fmt_date(a.get("opened_date")), cell_st),
             Paragraph(f'<font color="{txt}"><b>{st.title()}</b></font>', cell_st),
             Paragraph(_money(a.get("balance")), cellr_st),
@@ -213,16 +230,16 @@ def generate_credit_report_pdf(schema: dict) -> bytes:
         pr_rows = [[Paragraph(h, head_st) for h in ["Type", "Lender / Court", "Amount", "Date"]]]
         for d in public_records:
             pr_rows.append([
-                Paragraph(str(d.get("record_type") or d.get("status") or "Record").title(), cell_st),
-                Paragraph((d.get("lender") or "—")[:36], cell_st),
+                Paragraph((_txt(d.get("record_type")) or _txt(d.get("status")) or "Record").title(), cell_st),
+                Paragraph(_txt(d.get("lender"), 36) or "—", cell_st),
                 Paragraph(_money(d.get("amount")) if d.get("amount") else "—", cellr_st),
                 Paragraph(_fmt_date(d.get("date")), cell_st),
             ])
         for a in accounts:
-            if (a.get("status") or "").upper() == "DEFAULT":
+            if _txt(a.get("status")).upper() == "DEFAULT":
                 pr_rows.append([
                     Paragraph("Default", cell_st),
-                    Paragraph((a.get("lender") or "—")[:36], cell_st),
+                    Paragraph(_txt(a.get("lender"), 36) or "—", cell_st),
                     Paragraph(_money(a.get("default_balance") or a.get("balance")), cellr_st),
                     Paragraph(_fmt_date(a.get("default_date")), cell_st),
                 ])
@@ -246,8 +263,8 @@ def generate_credit_report_pdf(schema: dict) -> bytes:
         for s in searches[:40]:
             s_rows.append([
                 Paragraph(_fmt_date(s.get("date")), cell_st),
-                Paragraph((s.get("lender") or "—")[:44], cell_st),
-                Paragraph((s.get("search_subtype") or s.get("search_type") or "—").title(), cell_st),
+                Paragraph(_txt(s.get("lender"), 44) or "—", cell_st),
+                Paragraph((_txt(s.get("search_subtype")) or _txt(s.get("search_type")) or "—").title(), cell_st),
             ])
         stbl = Table(s_rows, colWidths=[W*0.18, W*0.56, W*0.26], repeatRows=1)
         stbl.setStyle(TableStyle([

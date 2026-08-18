@@ -15,6 +15,7 @@ from app.models.tables import Batch, Job, Client, LenderResult, Case
 from app.models.enums import JobStatus
 from app.api.routes.webhook import _require_irl_key
 from app.workers.fetch import fetch_and_process
+from app.documents.tracker_csv import TRACKER_HEADER, TL_LABELS, split_name, split_address
 
 # Job statuses that mean the job will not change again. A batch is "ready" to
 # export once none of its jobs are in a non-terminal (still-processing) state.
@@ -44,40 +45,9 @@ def _batch_is_ready(db: Session, batch: Batch) -> bool:
 
 _FALLBACK_BASE = "http://localhost:8000"
 
-_TITLES = {"MR", "MRS", "MS", "MISS", "DR", "PROF", "SIR", "REV", "MASTER"}
-_UK_POSTCODE = re.compile(r'\b[A-Z]{1,2}\d[A-Z\d]?\s*\d[A-Z]{2}\b', re.I)
-
-_TL_LABELS = {
-    "GREEN": "Strong",
-    "AMBER": "Borderline",
-    "RED":   "Weak",
-}
-
-
-def _split_name(full_name: str):
-    """Return (title, first_name, surname) from a full name string."""
-    parts = full_name.strip().title().split()
-    if not parts:
-        return "", "", ""
-    if parts[0].upper() in _TITLES:
-        return parts[0], (parts[1] if len(parts) > 1 else ""), " ".join(parts[2:])
-    return "", parts[0], " ".join(parts[1:])
-
-
-def _split_address(address: str):
-    """Return (res1, res2, res3, postcode) from a comma-joined address string."""
-    parts = [p.strip() for p in address.split(",") if p.strip()]
-    postcode = ""
-    for i in range(len(parts) - 1, -1, -1):
-        if _UK_POSTCODE.search(parts[i]):
-            postcode = parts.pop(i).strip().upper()
-            break
-    return (
-        parts[0] if len(parts) > 0 else "",
-        parts[1] if len(parts) > 1 else "",
-        parts[2] if len(parts) > 2 else "",
-        postcode,
-    )
+# Tracker column layout + name/address/traffic-light helpers now live in
+# app.documents.tracker_csv (shared with the per-case outcome postback) so both
+# tracker producers emit an identical Proclaim-ready format.
 
 
 def _case_status(loc_generated: bool, traffic_light: str | None) -> str:
@@ -236,19 +206,13 @@ def export_tracker_csv(batch_id: int, request: Request, db: Session = Depends(ge
         return buf.getvalue()
 
     def stream():
-        yield _line([
-            "Client Reference",
-            "Timestamp", "Title", "First Name", "Surname", "Date of Birth", "Email", "Phone",
-            "Residence 1", "Residence 2", "Residence 3", "Postal Code",
-            "Defendant", "Analysis Status", "Case Status",
-            "Credit Report", "Assessment PDF", "Letter of Claim",
-        ])
+        yield _line(TRACKER_HEADER)
         for (jid, created, raw_key, assess_key, credit_key, c_name, c_dob, c_addr,
              email, phone, nd_name, nd_dob, nd_addr, lead_ref) in job_rows:
             ts = created.strftime("%d/%m/%Y %H:%M") if created else ""
-            title, first_name, surname = _split_name((c_name or "") or (nd_name or ""))
+            title, first_name, surname = split_name((c_name or "") or (nd_name or ""))
             dob = (str(c_dob) if c_dob else "") or (nd_dob or "")
-            res1, res2, res3, postcode = _split_address((c_addr or "") or (nd_addr or ""))
+            res1, res2, res3, postcode = split_address((c_addr or "") or (nd_addr or ""))
             # Prefer the generated credit-report PDF (outputs bucket); fall back to
             # the raw report JSON for older jobs that predate PDF generation.
             report_url     = (_file_url(OUTB, credit_key, base_url) if credit_key
@@ -263,7 +227,7 @@ def export_tracker_csv(batch_id: int, request: Request, db: Session = Depends(ge
                         ref,
                         ts, title, first_name, surname, dob, email or "", phone or "",
                         res1, res2, res3, postcode,
-                        lender, _TL_LABELS.get((tl or "").upper(), ""), "LOC Generated",
+                        lender, TL_LABELS.get((tl or "").upper(), ""), "LOC Generated",
                         report_url, assessment_url, _file_url(OUTB, k, base_url),
                     ])
             else:

@@ -6,11 +6,14 @@ count. Case status is the intake/postback state; `job_status` is the live
 assessment-pipeline state of the linked Job.
 """
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.models.tables import Case, Job, LenderResult
+from app.api.routes.webhook import _require_irl_key
+from app.workers.fetch import fetch_and_process
 
 router = APIRouter()
 
@@ -75,6 +78,88 @@ def cases_summary(db: Session = Depends(get_db)):
         "locs_sent": locs_sent,
         "failed": failed,
         "in_progress": max(total - sent - failed, 0),
+    }
+
+
+class ReprocessCasesAsFirm(BaseModel):
+    lead_references: list[str]
+    firm: str = "ryans"          # target letterhead, e.g. "ryans"
+
+
+@router.post("/reprocess-as-firm", dependencies=[Depends(_require_irl_key)])
+def reprocess_cases_as_firm(body: ReprocessCasesAsFirm, db: Session = Depends(get_db)):
+    """Re-run specific existing IRL cases under a DIFFERENT solicitor firm and
+    re-deliver them through the per-case outcome postback.
+
+    For each lead_reference: clone the retained raw report into a new PENDING job
+    tagged with the target firm, re-point the Case at it, and re-arm the outcome
+    (outcome_sent=False). When the new job completes, the postback re-delivers the
+    freshly firm-branded LOCs + PDF credit report + per-case tracker CSV. The
+    partner replaces the prior IRL doc set on receipt, so corrected docs supersede
+    any earlier ones with no duplicates.
+
+    The raw report is re-fetched from S3 (normalised_data is purged post-delivery),
+    so this works long after the original run. Use this to (re)brand a hand-picked
+    set of single hub cases — e.g. move 44 cases onto the Ryans letterhead — where
+    the batch-level /batches/reprocess-as-firm would sweep in unrelated cases.
+    """
+    firm = (body.firm or "").strip().lower()
+    if not firm:
+        raise HTTPException(status_code=422, detail="firm is required")
+    # De-dupe while preserving order; a repeated lead_reference must re-run once.
+    refs = list(dict.fromkeys(r for r in (body.lead_references or []) if r))
+    if not refs:
+        raise HTTPException(status_code=422, detail="lead_references must be a non-empty list")
+
+    queued: list[int] = []
+    results = []
+    for ref in refs:
+        case = db.query(Case).filter(Case.lead_reference == ref).first()
+        if not case:
+            results.append({"lead_reference": ref, "status": "not_found"})
+            continue
+        old_job = db.get(Job, case.job_id) if case.job_id else None
+        raw_key = (old_job.s3_raw_key if old_job else None) or case.s3_raw_key
+        if not raw_key:
+            results.append({"lead_reference": ref, "status": "no_raw_report"})
+            continue
+
+        # New job under the target firm, in the same batch as before so counts stay
+        # coherent; the full pipeline re-runs from the retained raw report.
+        new_job = Job(
+            batch_id=(old_job.batch_id if old_job else None),
+            s3_raw_key=raw_key,
+            status="PENDING",
+            firm=firm,
+        )
+        db.add(new_job)
+        db.flush()
+
+        # Re-point the case at the new job and re-arm the outcome postback.
+        case.job_id = new_job.id
+        case.destination_brand_id = firm
+        case.outcome = None
+        case.outcome_sent = False
+        case.outcome_sent_at = None
+        case.outcome_attempts = 0
+        case.status = "QUEUED"
+        case.last_error = None
+        db.flush()
+
+        queued.append(new_job.id)
+        results.append({"lead_reference": ref, "status": "reprocessing", "job_id": new_job.id})
+
+    db.commit()
+
+    # Enqueue only after commit so the worker always finds the job.
+    for jid in queued:
+        fetch_and_process.apply_async(args=[jid], queue="fetch")
+
+    return {
+        "firm": firm,
+        "requested": len(refs),
+        "reprocessing": len(queued),
+        "results": results,
     }
 
 
