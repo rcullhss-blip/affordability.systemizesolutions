@@ -16,7 +16,7 @@ from app.models.enums import JobStatus
 from app.api.routes.webhook import _require_irl_key
 from app.workers.fetch import fetch_and_process
 from app.documents.tracker_csv import (
-    TL_LABELS, split_name, split_address, case_key_for, tracker_header_for,
+    TL_LABELS, split_name, split_address, case_key_for, tracker_header_for, format_dob,
 )
 
 # Job statuses that mean the job will not change again. A batch is "ready" to
@@ -222,6 +222,7 @@ def export_tracker_csv(batch_id: int, request: Request, db: Session = Depends(ge
             ts = created.strftime("%d/%m/%Y %H:%M") if created else ""
             title, first_name, surname = split_name((c_name or "") or (nd_name or ""))
             dob = (str(c_dob) if c_dob else "") or (nd_dob or "")
+            dob = format_dob(dob, batch.firm)  # DD/MM/YYYY for firms that need it (Ryans)
             res1, res2, res3, postcode = split_address((c_addr or "") or (nd_addr or ""))
             # Prefer the generated credit-report PDF (outputs bucket); fall back to
             # the raw report JSON for older jobs that predate PDF generation.

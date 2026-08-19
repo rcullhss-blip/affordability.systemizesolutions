@@ -15,6 +15,7 @@ the columns inline — so Ryan's Proclaim import always sees an identical layout
 regardless of whether the tracker came from a batch export or a single case.
 """
 import csv
+import datetime as _dt
 import io
 import re
 
@@ -68,6 +69,30 @@ def prepend_case_key(rows, firm):
     otherwise return the rows unchanged (as new lists)."""
     ck = case_key_for(firm)
     return [[ck, *r] for r in rows] if ck else [list(r) for r in rows]
+
+
+# Firms whose middleware expects dates in UK DD/MM/YYYY format rather than the
+# ISO YYYY-MM-DD our pipeline stores. Ryans' Proclaim import needs DD/MM/YYYY.
+FIRM_UK_DATES = {"ryans"}
+
+
+def format_dob(value, firm):
+    """Render a date of birth for a firm's tracker. Firms in FIRM_UK_DATES
+    (e.g. Ryans) get DD/MM/YYYY; all others keep the value unchanged (ISO).
+    An unparseable value is returned untouched so we never drop a DoB."""
+    if (firm or "").strip().lower() not in FIRM_UK_DATES:
+        return value or ""
+    if not value:
+        return ""
+    if isinstance(value, (_dt.date, _dt.datetime)):
+        return value.strftime("%d/%m/%Y")
+    s = str(value).strip()
+    for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%d/%m/%Y", "%d-%m-%Y"):
+        try:
+            return _dt.datetime.strptime(s[:10], fmt).strftime("%d/%m/%Y")
+        except ValueError:
+            continue
+    return s  # unparseable — leave as-is rather than lose the value
 
 
 def split_name(full_name: str):
