@@ -786,7 +786,6 @@ def generate_loc_docx(schema: dict, lender_result, review_warnings: list[str] | 
     client         = schema.get("client", {})
     client_name    = client.get("name") or "Our Client"
     client_address = client.get("address") or "—"
-    matter_ref     = client.get("matter_ref") or "—"
     today_str      = date.today().strftime("%d %B %Y")
 
     all_accounts = schema.get("accounts", [])
@@ -862,7 +861,9 @@ def generate_loc_docx(schema: dict, lender_result, review_warnings: list[str] | 
     _para(doc, "", space_after=6)
 
     # ── Our Ref ───────────────────────────────────────────────────────────
-    _para(doc, f"Our Ref:\t{matter_ref}", size=11, space_after=10)
+    # Left blank for the instructing solicitor to fill in their own matter
+    # reference — we no longer print our reference on the LOC (all firms).
+    _para(doc, "Our Ref:\t", size=11, space_after=10)
 
     # ── Salutation ────────────────────────────────────────────────────────
     _para(doc, "Dear Sirs,", size=11, space_after=6)
