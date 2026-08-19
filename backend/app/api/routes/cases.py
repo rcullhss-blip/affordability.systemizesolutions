@@ -11,11 +11,54 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
+from app.core.config import settings
 from app.models.tables import Case, Job, LenderResult
 from app.api.routes.webhook import _require_irl_key
 from app.workers.fetch import fetch_and_process
 
 router = APIRouter()
+
+
+def _signed(bucket: str, key: str | None) -> str:
+    """7-day presigned download URL (local proxy path in dev). Best-effort."""
+    if not key:
+        return ""
+    if settings.use_local_storage:
+        from app.core.storage import get_download_url
+        return get_download_url(bucket, key)
+    from app.core.s3 import generate_presigned_url
+    try:
+        return generate_presigned_url(bucket, key, expires_in=604800)  # 7 days
+    except Exception:
+        return ""
+
+
+def _case_documents(case: Case, job: Job, db: Session) -> dict:
+    """Signed URLs for a case's artefacts — credit report, assessment, the
+    per-case tracker CSV, and generated LOCs. The tracker key mirrors the one
+    written by app.workers.irl_outcome so this points at the same object."""
+    OUTB, RAW = settings.S3_BUCKET_OUTPUTS, settings.S3_BUCKET_RAW
+    report = (_signed(OUTB, job.s3_credit_report_key) if job.s3_credit_report_key
+              else _signed(RAW, job.s3_raw_key))
+    if job.s3_assessment_key:
+        tracker_key = (job.s3_assessment_key.rsplit("_affordability_assessment.pdf", 1)[0]
+                       + "_affordability_tracker.csv")
+    else:
+        tracker_key = f"outputs/irl-case/{case.lead_reference}/affordability_tracker.csv"
+    locs = [
+        {"lender": lr.lender_name, "url": _signed(OUTB, lr.s3_loc_key)}
+        for lr in db.query(LenderResult)
+        .filter(LenderResult.job_id == job.id,
+                LenderResult.loc_generated.is_(True),
+                LenderResult.s3_loc_key.isnot(None))
+        .all()
+    ]
+    return {
+        "credit_report": report,
+        "assessment": _signed(OUTB, job.s3_assessment_key),
+        "tracker_csv": _signed(OUTB, tracker_key),
+        "locs": locs,
+    }
 
 
 def _serialise_case(case: Case, job) -> dict:
@@ -189,4 +232,6 @@ def get_case(case_id: int, db: Session = Depends(get_db)):
             }
             for lr in db.query(LenderResult).filter(LenderResult.job_id == job.id).all()
         ]
+        data["documents"] = _case_documents(case, job, db)
+    data["cfa"] = case.cfa
     return data
