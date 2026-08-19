@@ -15,7 +15,9 @@ from app.models.tables import Batch, Job, Client, LenderResult, Case
 from app.models.enums import JobStatus
 from app.api.routes.webhook import _require_irl_key
 from app.workers.fetch import fetch_and_process
-from app.documents.tracker_csv import TRACKER_HEADER, TL_LABELS, split_name, split_address
+from app.documents.tracker_csv import (
+    TRACKER_HEADER, TL_LABELS, split_name, split_address, client_reference_for,
+)
 
 # Job statuses that mean the job will not change again. A batch is "ready" to
 # export once none of its jobs are in a non-terminal (still-processing) state.
@@ -218,7 +220,9 @@ def export_tracker_csv(batch_id: int, request: Request, db: Session = Depends(ge
             report_url     = (_file_url(OUTB, credit_key, base_url) if credit_key
                               else _file_url(RAW, raw_key, base_url))
             assessment_url = _file_url(OUTB, assess_key, base_url)
-            ref = lead_ref or ""
+            # Ryans' middleware reads Client Reference as a case-type code, so
+            # every Ryans row is forced to "IL"; other firms keep the lead ref.
+            ref = client_reference_for(batch.firm, lead_ref)
             these = lrs.get(jid, [])
             locs = [(l, tl, k) for (l, tl, g, k) in these if g and k]
             if locs:

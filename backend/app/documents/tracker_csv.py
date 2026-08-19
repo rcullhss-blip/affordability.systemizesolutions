@@ -28,6 +28,25 @@ TL_LABELS = {
     "RED":   "Weak",
 }
 
+# Firms whose middleware reads the "Client Reference" column as a case-type code
+# rather than a per-client reference. Ryans' Proclaim middleware keys the case
+# type off this column, so EVERY Ryans row must carry "IL" (Irresponsible
+# Lending) for cases to file under the correct type on import. Any firm not
+# listed here keeps its normal per-case lead reference in this column.
+FIRM_CLIENT_REF = {
+    "ryans": "IL",
+}
+
+
+def client_reference_for(firm, lead_reference=""):
+    """Value for the tracker's 'Client Reference' cell.
+
+    For firms in FIRM_CLIENT_REF (e.g. Ryans) this column is a fixed case-type
+    code their middleware reads, so it overrides the per-case lead reference.
+    All other firms fall back to the lead reference as before.
+    """
+    return FIRM_CLIENT_REF.get((firm or "").strip().lower(), lead_reference or "")
+
 # The exact column order Proclaim expects. Do not reorder or rename.
 TRACKER_HEADER = [
     "Client Reference",
