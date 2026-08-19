@@ -22,7 +22,7 @@ from app.core.config import settings
 from app.core.storage import get_download_url, upload_bytes
 from app.core.lender_blocklist import is_blocked
 from app.documents.tracker_csv import (
-    build_case_tracker_rows, rows_to_csv_bytes, prepend_case_key, tracker_header_for,
+    build_case_tracker_rows, rows_to_csv_bytes, decorate_rows, tracker_header_for,
     format_dob,
 )
 from app.models.tables import Case, Job, LenderResult
@@ -120,7 +120,8 @@ def _build_documents(case: Case, job: Job, lenders: list) -> list:
             assessment_url=assessment_url,
             loc_url_for=lambda k: loc_urls.get(k, ""),
         )
-        rows = prepend_case_key(rows, firm)
+        # Ryans also gets trailing CFA columns from the case's cfa block.
+        rows = decorate_rows(rows, firm, case.cfa)
         csv_bytes = rows_to_csv_bytes(rows, tracker_header_for(firm))
         # Deterministic key so retries overwrite rather than pile up.
         if job.s3_assessment_key:

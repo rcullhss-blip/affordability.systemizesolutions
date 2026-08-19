@@ -16,7 +16,7 @@ from app.models.enums import JobStatus
 from app.api.routes.webhook import _require_irl_key
 from app.workers.fetch import fetch_and_process
 from app.documents.tracker_csv import (
-    TL_LABELS, split_name, split_address, case_key_for, tracker_header_for, format_dob,
+    TL_LABELS, split_name, split_address, decorate_rows, tracker_header_for, format_dob,
 )
 
 # Job statuses that mean the job will not change again. A batch is "ready" to
@@ -181,7 +181,7 @@ def export_tracker_csv(batch_id: int, request: Request, db: Session = Depends(ge
             Client.name, Client.dob, Client.address,
             ndp("client", "email"), ndp("client", "phone"),
             ndp("client", "name"), ndp("client", "dob"), ndp("client", "address"),
-            Case.lead_reference,
+            Case.lead_reference, Case.cfa,
         )
         .outerjoin(Client, Client.id == Job.client_id)
         .outerjoin(Case, Case.job_id == Job.id)
@@ -207,18 +207,16 @@ def export_tracker_csv(batch_id: int, request: Request, db: Session = Depends(ge
         csv.writer(buf).writerow(vals)
         return buf.getvalue()
 
-    # Ryans' middleware reads a leading "Case Key" column as the case-type code
-    # ("IL"); other firms get no Case Key column and the original layout. The
-    # Client Reference column carries our lead reference for every firm.
-    case_key = case_key_for(batch.firm)
-
-    def _row(cells):
-        return _line([case_key, *cells] if case_key else cells)
+    # Firm-specific decorations: Ryans gets a leading "Case Key" column ("IL")
+    # and a trailing "CFA" document column; other firms get the original layout.
+    # The Client Reference column carries our lead reference for every firm.
+    def _row(cells, cfa=None):
+        return _line(decorate_rows([cells], batch.firm, cfa)[0])
 
     def stream():
         yield _line(tracker_header_for(batch.firm))
         for (jid, created, raw_key, assess_key, credit_key, c_name, c_dob, c_addr,
-             email, phone, nd_name, nd_dob, nd_addr, lead_ref) in job_rows:
+             email, phone, nd_name, nd_dob, nd_addr, lead_ref, cfa) in job_rows:
             ts = created.strftime("%d/%m/%Y %H:%M") if created else ""
             title, first_name, surname = split_name((c_name or "") or (nd_name or ""))
             dob = (str(c_dob) if c_dob else "") or (nd_dob or "")
@@ -240,7 +238,7 @@ def export_tracker_csv(batch_id: int, request: Request, db: Session = Depends(ge
                         res1, res2, res3, postcode,
                         lender, TL_LABELS.get((tl or "").upper(), ""), "LOC Generated",
                         report_url, assessment_url, _file_url(OUTB, k, base_url),
-                    ])
+                    ], cfa)
             else:
                 all_blocked = bool(these) and all(is_blocked(l) for (l, _, _, _) in these)
                 case_status = "No Viable Defendant" if all_blocked else "No Viable Claim"
@@ -249,7 +247,7 @@ def export_tracker_csv(batch_id: int, request: Request, db: Session = Depends(ge
                     ts, title, first_name, surname, dob, email or "", phone or "",
                     res1, res2, res3, postcode, "", "", case_status,
                     report_url, assessment_url, "",
-                ])
+                ], cfa)
 
     firm_slug = (batch.firm or "first_legal")
     batch_slug = re.sub(r'[^a-z0-9]+', '_', (batch.name or str(batch_id)).lower()).strip('_')

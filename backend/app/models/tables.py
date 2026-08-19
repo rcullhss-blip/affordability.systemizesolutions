@@ -150,6 +150,11 @@ class Case(Base):
     # The Hub's coarse IRL triage (fired_signals / strong / supporting) — audit only
     triage: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
 
+    # CFA (Conditional Fee Agreement) block from the /irl-case payload — signed
+    # date, reference, client name, address, document url. Surfaced as the Ryans
+    # tracker's CFA columns so the solicitor imports the CFA with the case.
+    cfa: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+
     # Denormalised client fields for the admin Cases tab (no join needed to list)
     client_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     client_dob: Mapped[Optional[date]] = mapped_column(Date, nullable=True)

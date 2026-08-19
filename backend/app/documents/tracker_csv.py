@@ -57,18 +57,59 @@ def case_key_for(firm):
     return FIRM_CASE_KEY.get((firm or "").strip().lower())
 
 
+# Firms whose tracker carries a "CFA" column — the link to the signed CFA
+# (Conditional Fee Agreement) document, from the /irl-case `cfa` block, so the
+# solicitor imports the CFA with the case (retires the ack -> CFA-reply email).
+# Sits alongside the other document-link columns. Ryans-only for now.
+CFA_HEADER = ["CFA"]
+FIRM_CFA_COLUMNS = {"ryans"}
+
+
+def firm_has_cfa(firm):
+    return (firm or "").strip().lower() in FIRM_CFA_COLUMNS
+
+
+def cfa_cells(cfa, firm):
+    """The CFA column value(s) for a firm's tracker row (empty list if the firm
+    has no CFA column). `cfa` is the per-case block from the /irl-case payload;
+    the "CFA" column holds the link to the signed CFA document."""
+    if not firm_has_cfa(firm):
+        return []
+    cfa = cfa or {}
+    return [cfa.get("document_url") or ""]
+
+
 def tracker_header_for(firm):
-    """TRACKER_HEADER, prefixed with a 'Case Key' column for firms whose
-    middleware reads it (e.g. Ryans); otherwise the original header."""
-    return (["Case Key", *TRACKER_HEADER] if case_key_for(firm)
-            else list(TRACKER_HEADER))
+    """TRACKER_HEADER with a firm's decorations: a leading 'Case Key' column and/
+    or trailing CFA columns for firms whose middleware reads them (e.g. Ryans);
+    otherwise the original header."""
+    header = ["Case Key", *TRACKER_HEADER] if case_key_for(firm) else list(TRACKER_HEADER)
+    if firm_has_cfa(firm):
+        header = [*header, *CFA_HEADER]
+    return header
+
+
+def decorate_rows(rows, firm, cfa=None):
+    """Apply a firm's tracker decorations to base rows: a leading Case Key cell
+    and/or trailing CFA cells (the CFA block repeats on every row of the case).
+    Returns new lists; rows are unchanged for firms with no decorations."""
+    ck = case_key_for(firm)
+    suffix = cfa_cells(cfa, firm)
+    out = []
+    for r in rows:
+        row = list(r)
+        if ck is not None:
+            row = [ck, *row]
+        if suffix:
+            row = [*row, *suffix]
+        out.append(row)
+    return out
 
 
 def prepend_case_key(rows, firm):
-    """Prefix each row with the firm's Case Key cell when the firm uses one;
-    otherwise return the rows unchanged (as new lists)."""
-    ck = case_key_for(firm)
-    return [[ck, *r] for r in rows] if ck else [list(r) for r in rows]
+    """Back-compat shim: apply the leading Case Key cell only. Prefer
+    decorate_rows(), which also appends CFA columns."""
+    return decorate_rows(rows, firm)
 
 
 # Firms whose middleware expects dates in UK DD/MM/YYYY format rather than the

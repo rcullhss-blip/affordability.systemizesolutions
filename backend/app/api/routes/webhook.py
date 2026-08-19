@@ -175,6 +175,7 @@ async def ingest_irl_case(
         existing.destination_brand_id = brand_id
         existing.bosh_reference = payload.get("bosh_reference")
         existing.triage = payload.get("triage")
+        existing.cfa = payload.get("cfa")
         existing.client_name = full_name
         existing.client_dob = _parse_date_opt(client.get("date_of_birth"))
         existing.client_postcode = address.get("postcode")
@@ -232,6 +233,7 @@ async def ingest_irl_case(
         destination_brand_id=brand_id,
         status="QUEUED",
         triage=payload.get("triage"),
+        cfa=payload.get("cfa"),
         client_name=full_name,
         client_dob=_parse_date_opt(client.get("date_of_birth")),
         client_postcode=address.get("postcode"),
