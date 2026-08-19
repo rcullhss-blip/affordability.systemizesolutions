@@ -92,6 +92,12 @@ async def ingest_irl_case(
     duplicate). The credit report is fed into the standard assessment pipeline
     via a linked Job; the outcome is posted back to the PCP platform by the
     irl_outcome beat task once the Job completes.
+
+    Forced re-run: send `force_rerun: true` (alias `rerun: true`) to deliberately
+    re-score an existing case — e.g. to re-issue it under a different solicitor
+    LOC. The case is re-pointed at a fresh Job and its outcome bookkeeping reset,
+    so the pipeline runs again and the outcome re-posts on completion. Include the
+    full envelope (credit_report + destination.brand_id) exactly as a first send.
     """
     try:
         raw_bytes = await request.body()
@@ -103,9 +109,15 @@ async def ingest_irl_case(
     if not lead_reference:
         raise HTTPException(status_code=422, detail="lead_reference is required")
 
-    # ── Idempotency: never duplicate on retry ────────────────────────────────
+    # ── Idempotency: a plain retry never duplicates ───────────────────────────
+    # A retry with the same lead_reference returns the existing case untouched —
+    # UNLESS the payload asks for a forced re-run (force_rerun / rerun: true), a
+    # deliberate re-score of an existing case (e.g. re-issue under a different
+    # solicitor LOC). The re-run branch below re-points the case at a fresh Job
+    # and resets the outcome bookkeeping so the postback fires again.
     existing = db.query(Case).filter(Case.lead_reference == lead_reference).first()
-    if existing:
+    force_rerun = bool(payload.get("force_rerun") or payload.get("rerun"))
+    if existing and not force_rerun:
         return {
             "status": "duplicate",
             "lead_reference": existing.lead_reference,
@@ -132,6 +144,63 @@ async def ingest_irl_case(
     brand_id = destination.get("brand_id")
     batch_marker = payload.get("batch_id")
 
+    client = payload.get("client") or {}
+    address = client.get("address") or {}
+    full_name = " ".join(
+        p for p in [client.get("first_name"), client.get("last_name")] if p
+    ) or None
+
+    # ── Forced re-run of an existing case ─────────────────────────────────────
+    # Re-point the case at a FRESH Job (so the pipeline re-scores from the just-
+    # uploaded, possibly re-branded envelope) and reset its outcome bookkeeping so
+    # the beat task re-posts once that Job completes. The case keeps its original
+    # batch — a re-run is not a new report — so total_reports is not incremented.
+    if existing:
+        rerun_batch_id = existing.job.batch_id if existing.job else None
+        if rerun_batch_id is None:
+            fallback = db.query(Batch).filter(Batch.name == IRL_CASES_BATCH).first()
+            if not fallback:
+                fallback = Batch(name=IRL_CASES_BATCH, total_reports=0)
+                db.add(fallback)
+                db.flush()
+            rerun_batch_id = fallback.id
+
+        job = Job(batch_id=rerun_batch_id, s3_raw_key=s3_key, status="PENDING", firm=brand_id)
+        db.add(job)
+        db.flush()
+
+        existing.job_id = job.id
+        existing.s3_raw_key = s3_key
+        existing.source = source
+        existing.destination_brand_id = brand_id
+        existing.bosh_reference = payload.get("bosh_reference")
+        existing.triage = payload.get("triage")
+        existing.client_name = full_name
+        existing.client_dob = _parse_date_opt(client.get("date_of_birth"))
+        existing.client_postcode = address.get("postcode")
+        # Reset outcome state so post_case_outcomes re-fires on the new job.
+        existing.status = "QUEUED"
+        existing.outcome = None
+        existing.traffic_light = None
+        existing.claim_value = None
+        existing.outcome_sent = False
+        existing.outcome_sent_at = None
+        existing.outcome_attempts = 0
+        existing.last_error = None
+        db.commit()          # commit before enqueue so the worker can find the job
+        db.refresh(existing)
+
+        task = fetch_and_process.apply_async(args=[job.id], queue="fetch")
+        job.celery_task_id = task.id
+        db.commit()
+
+        return {
+            "status": "requeued",
+            "lead_reference": lead_reference,
+            "case_id": existing.id,
+            "job_id": job.id,
+        }
+
     # A tagged bulk run (e.g. Woodville, batch_id present) groups all its cases into
     # ONE dedicated Batch so it lands as a single batch on the Batches tab and can be
     # exported as one tracker. Untagged single cases share the rolling irl-cases batch.
@@ -154,12 +223,6 @@ async def ingest_irl_case(
     job = Job(batch_id=batch.id, s3_raw_key=s3_key, status="PENDING", firm=brand_id)
     db.add(job)
     db.flush()
-
-    client = payload.get("client") or {}
-    address = client.get("address") or {}
-    full_name = " ".join(
-        p for p in [client.get("first_name"), client.get("last_name")] if p
-    ) or None
 
     case = Case(
         lead_reference=lead_reference,
