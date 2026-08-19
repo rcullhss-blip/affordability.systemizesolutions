@@ -28,25 +28,6 @@ TL_LABELS = {
     "RED":   "Weak",
 }
 
-# Firms whose middleware reads the "Client Reference" column as a case-type code
-# rather than a per-client reference. Ryans' Proclaim middleware keys the case
-# type off this column, so EVERY Ryans row must carry "IL" (Irresponsible
-# Lending) for cases to file under the correct type on import. Any firm not
-# listed here keeps its normal per-case lead reference in this column.
-FIRM_CLIENT_REF = {
-    "ryans": "IL",
-}
-
-
-def client_reference_for(firm, lead_reference=""):
-    """Value for the tracker's 'Client Reference' cell.
-
-    For firms in FIRM_CLIENT_REF (e.g. Ryans) this column is a fixed case-type
-    code their middleware reads, so it overrides the per-case lead reference.
-    All other firms fall back to the lead reference as before.
-    """
-    return FIRM_CLIENT_REF.get((firm or "").strip().lower(), lead_reference or "")
-
 # The exact column order Proclaim expects. Do not reorder or rename.
 TRACKER_HEADER = [
     "Client Reference",
@@ -55,6 +36,38 @@ TRACKER_HEADER = [
     "Defendant", "Analysis Status", "Case Status",
     "Credit Report", "Assessment PDF", "Letter of Claim",
 ]
+
+# Firms whose middleware reads a LEADING "Case Key" column as a case-type code.
+# Ryans' Proclaim middleware files the case by this code, so every Ryans row
+# gets "IL" (Irresponsible Lending) in a "Case Key" column prepended ahead of
+# "Client Reference". The Client Reference column then carries OUR per-case
+# reference (lead reference), which Ryans store and echo back on the case-
+# creation email so we can reconcile. Firms NOT listed here get no Case Key
+# column and the original TRACKER_HEADER layout is unchanged (so live First
+# Legal / Barings / Accord imports are untouched).
+FIRM_CASE_KEY = {
+    "ryans": "IL",
+}
+
+
+def case_key_for(firm):
+    """The leading 'Case Key' code for a firm, or None if the firm's tracker has
+    no Case Key column (i.e. the original layout)."""
+    return FIRM_CASE_KEY.get((firm or "").strip().lower())
+
+
+def tracker_header_for(firm):
+    """TRACKER_HEADER, prefixed with a 'Case Key' column for firms whose
+    middleware reads it (e.g. Ryans); otherwise the original header."""
+    return (["Case Key", *TRACKER_HEADER] if case_key_for(firm)
+            else list(TRACKER_HEADER))
+
+
+def prepend_case_key(rows, firm):
+    """Prefix each row with the firm's Case Key cell when the firm uses one;
+    otherwise return the rows unchanged (as new lists)."""
+    ck = case_key_for(firm)
+    return [[ck, *r] for r in rows] if ck else [list(r) for r in rows]
 
 
 def split_name(full_name: str):
@@ -99,11 +112,15 @@ def tracker_row(*, client_reference="", timestamp="", name="", dob="", email="",
     ]
 
 
-def rows_to_csv_bytes(rows) -> bytes:
-    """Header + rows -> UTF-8 CSV bytes (matches the streamed batch export)."""
+def rows_to_csv_bytes(rows, header=None) -> bytes:
+    """Header + rows -> UTF-8 CSV bytes (matches the streamed batch export).
+
+    Pass `header` (e.g. from tracker_header_for(firm)) when the rows carry a
+    firm-specific layout such as Ryans' leading Case Key column; defaults to the
+    standard TRACKER_HEADER."""
     buf = io.StringIO()
     w = csv.writer(buf)
-    w.writerow(TRACKER_HEADER)
+    w.writerow(header or TRACKER_HEADER)
     for r in rows:
         w.writerow(r)
     return buf.getvalue().encode("utf-8")

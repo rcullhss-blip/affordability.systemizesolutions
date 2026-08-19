@@ -22,7 +22,7 @@ from app.core.config import settings
 from app.core.storage import get_download_url, upload_bytes
 from app.core.lender_blocklist import is_blocked
 from app.documents.tracker_csv import (
-    build_case_tracker_rows, rows_to_csv_bytes, client_reference_for,
+    build_case_tracker_rows, rows_to_csv_bytes, prepend_case_key, tracker_header_for,
 )
 from app.models.tables import Case, Job, LenderResult
 
@@ -102,10 +102,7 @@ def _build_documents(case: Case, job: Job, lenders: list) -> list:
         ts = (job.completed_at or job.created_at)
         ts = ts.strftime("%d/%m/%Y %H:%M") if ts else ""
         rows = build_case_tracker_rows(
-            # Ryans' middleware reads Client Reference as a case-type code, so
-            # Ryans cases are forced to "IL"; other firms keep the lead ref.
-            client_reference=client_reference_for(
-                job.firm or case.destination_brand_id, case.lead_reference),
+            client_reference=case.lead_reference,
             timestamp=ts,
             **_client_fields(case, job),
             lenders=[(lr.lender_name, lr.traffic_light, lr.loc_generated, lr.s3_loc_key)
@@ -115,7 +112,12 @@ def _build_documents(case: Case, job: Job, lenders: list) -> list:
             assessment_url=assessment_url,
             loc_url_for=lambda k: loc_urls.get(k, ""),
         )
-        csv_bytes = rows_to_csv_bytes(rows)
+        # Ryans' middleware reads a leading "Case Key" column ("IL") as the case
+        # type; our lead reference stays in Client Reference so Ryans can echo it
+        # back on the case-creation email. Other firms keep the original layout.
+        firm = job.firm or case.destination_brand_id
+        rows = prepend_case_key(rows, firm)
+        csv_bytes = rows_to_csv_bytes(rows, tracker_header_for(firm))
         # Deterministic key so retries overwrite rather than pile up.
         if job.s3_assessment_key:
             tracker_key = job.s3_assessment_key.rsplit(

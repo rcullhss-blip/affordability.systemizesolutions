@@ -16,7 +16,7 @@ from app.models.enums import JobStatus
 from app.api.routes.webhook import _require_irl_key
 from app.workers.fetch import fetch_and_process
 from app.documents.tracker_csv import (
-    TRACKER_HEADER, TL_LABELS, split_name, split_address, client_reference_for,
+    TL_LABELS, split_name, split_address, case_key_for, tracker_header_for,
 )
 
 # Job statuses that mean the job will not change again. A batch is "ready" to
@@ -207,8 +207,16 @@ def export_tracker_csv(batch_id: int, request: Request, db: Session = Depends(ge
         csv.writer(buf).writerow(vals)
         return buf.getvalue()
 
+    # Ryans' middleware reads a leading "Case Key" column as the case-type code
+    # ("IL"); other firms get no Case Key column and the original layout. The
+    # Client Reference column carries our lead reference for every firm.
+    case_key = case_key_for(batch.firm)
+
+    def _row(cells):
+        return _line([case_key, *cells] if case_key else cells)
+
     def stream():
-        yield _line(TRACKER_HEADER)
+        yield _line(tracker_header_for(batch.firm))
         for (jid, created, raw_key, assess_key, credit_key, c_name, c_dob, c_addr,
              email, phone, nd_name, nd_dob, nd_addr, lead_ref) in job_rows:
             ts = created.strftime("%d/%m/%Y %H:%M") if created else ""
@@ -220,14 +228,12 @@ def export_tracker_csv(batch_id: int, request: Request, db: Session = Depends(ge
             report_url     = (_file_url(OUTB, credit_key, base_url) if credit_key
                               else _file_url(RAW, raw_key, base_url))
             assessment_url = _file_url(OUTB, assess_key, base_url)
-            # Ryans' middleware reads Client Reference as a case-type code, so
-            # every Ryans row is forced to "IL"; other firms keep the lead ref.
-            ref = client_reference_for(batch.firm, lead_ref)
+            ref = lead_ref or ""
             these = lrs.get(jid, [])
             locs = [(l, tl, k) for (l, tl, g, k) in these if g and k]
             if locs:
                 for lender, tl, k in locs:
-                    yield _line([
+                    yield _row([
                         ref,
                         ts, title, first_name, surname, dob, email or "", phone or "",
                         res1, res2, res3, postcode,
@@ -237,7 +243,7 @@ def export_tracker_csv(batch_id: int, request: Request, db: Session = Depends(ge
             else:
                 all_blocked = bool(these) and all(is_blocked(l) for (l, _, _, _) in these)
                 case_status = "No Viable Defendant" if all_blocked else "No Viable Claim"
-                yield _line([
+                yield _row([
                     ref,
                     ts, title, first_name, surname, dob, email or "", phone or "",
                     res1, res2, res3, postcode, "", "", case_status,
