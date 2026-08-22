@@ -33,6 +33,7 @@ from app.core.database import get_db
 from app.core.storage import upload_bytes
 from app.core.config import settings
 from app.models.tables import Batch, Job, Case
+from app.documents.loc_docx import KNOWN_FIRMS, is_known_firm
 from app.parsers.router import _JSON_PARTNER_POST_PREFIX
 from app.parsers.json_normaliser import normalise_json_payload
 from app.workers.fetch import fetch_and_process
@@ -133,6 +134,19 @@ async def ingest_irl_case(
             detail="credit_report.raw (or .normalised) is required",
         )
 
+    # ── Brand guard ───────────────────────────────────────────────────────────
+    # destination.brand_id selects the LOC letterhead. An unrecognised value used
+    # to fall through silently to First Legal branding; reject it here instead so
+    # a mis-routed/typo'd brand never produces wrongly-branded LOCs. A missing /
+    # null brand_id is still accepted (legacy behaviour → first_legal).
+    _brand = (payload.get("destination") or {}).get("brand_id")
+    if _brand is not None and not is_known_firm(_brand):
+        raise HTTPException(
+            status_code=422,
+            detail=(f"destination.brand_id '{_brand}' is not a recognised solicitor brand; "
+                    f"expected one of: {', '.join(sorted(KNOWN_FIRMS))}"),
+        )
+
     # Store the full case envelope in S3 (raw for audit + normalised for assessment).
     # The parser reads credit_report.normalised via the Systemize IRL Case branch.
     s3_key = f"raw/irl-case/{uuid.uuid4()}/{lead_reference}.json"
@@ -142,6 +156,7 @@ async def ingest_irl_case(
     # Destination solicitor brand — selects the LOC letterhead (per-case via job.firm).
     destination = payload.get("destination") or {}
     brand_id = destination.get("brand_id")
+    brand_id = brand_id.strip().lower() if isinstance(brand_id, str) else brand_id
     batch_marker = payload.get("batch_id")
 
     client = payload.get("client") or {}

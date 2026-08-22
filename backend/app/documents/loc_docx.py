@@ -76,7 +76,35 @@ FIRM_CONFIGS = {
         "closing": "Yours faithfully,",
         "signoff": ["Ryans Solicitors", "Third Floor, Helix, Edmund Street, Liverpool, L3 9NY"],
     },
+    # TR Sols — 5th sols brand (PCP platform sends destination.brand_id = "tr_sols").
+    # Same pipeline as every other firm: assessment + one LOC per lender; only the
+    # letterhead differs. TODO(tr_sols): replace the placeholder address / SRA /
+    # company details below with the confirmed TR Sols letterhead text, and drop
+    # the real logo at backend/app/documents/tr-sols-logo.png (a missing logo
+    # renders a logo-less letterhead rather than failing the job).
+    "tr_sols": {
+        "name":    "TR Sols",
+        "address": "[TR SOLS ADDRESS — TO BE CONFIRMED]",
+        "logo":    os.path.join(_DOC_DIR, "tr-sols-logo.png"),
+        "logo_w":  4.6,  # cm — adjust to the logo's aspect ratio once supplied
+        "footer1": ("Please ensure that all correspondence is sent to: "
+                    "[TR SOLS ADDRESS — TO BE CONFIRMED]."),
+        "footer2": ("TR Sols is authorised and regulated by the Solicitors Regulation Authority "
+                    "under registration number [SRA — TBC]. Registered in England and Wales with "
+                    "Company Number: [TBC]. Registered Office: [TBC]."),
+        "closing": "Yours faithfully,",
+        "signoff": ["TR Sols", "[TR SOLS ADDRESS — TO BE CONFIRMED]"],
+    },
 }
+
+# Brand ids the platform recognises. Inbound IRL cases are validated against this
+# set at the webhook so an unknown brand_id is rejected up front instead of
+# silently producing First Legal-branded LOCs.
+KNOWN_FIRMS = frozenset(FIRM_CONFIGS)
+
+
+def is_known_firm(firm: str | None) -> bool:
+    return (firm or "").strip().lower() in KNOWN_FIRMS
 
 
 def get_firm_config(firm: str | None) -> dict:
