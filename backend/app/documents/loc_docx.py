@@ -75,6 +75,13 @@ FIRM_CONFIGS = {
                     "The White House, Greenalls Avenue, Warrington, England, WA4 6HL."),
         "closing": "Yours faithfully,",
         "signoff": ["Ryans Solicitors", "Third Floor, Helix, Edmund Street, Liverpool, L3 9NY"],
+        # Rendered under LOC para 6 ("Lien for Payment of Fees") so the lender
+        # knows where to remit damages. Supplied by Ryans, 25 Aug 2026.
+        "client_account": {
+            "Account Name":   "Ryans Solicitors Client Account",
+            "Account Number": "58166111",
+            "Sort Code":      "23-05-80",
+        },
     },
     # TR Sols — 5th sols brand (PCP platform sends destination.brand_id = "tr_sols").
     # Same pipeline as every other firm: assessment + one LOC per lender; only the
@@ -645,6 +652,26 @@ def _borderless_table(doc, rows, col_widths=(Cm(5.0), Cm(11.0))):
     return table
 
 
+def _client_account_block(doc, account: dict | None):
+    """Bank details for the firm's client account, indented to sit under para 6.
+
+    Firms without `client_account` in FIRM_CONFIGS render nothing here (para 6
+    then reads "is as follows:" with no details, as it did before) — add the
+    details to the firm config rather than special-casing this function.
+    """
+    if not account:
+        return
+    table = _borderless_table(doc, [(f"{k}:", v) for k, v in account.items()],
+                              col_widths=(Cm(4.6), Cm(10.4)))
+    # Match the hanging indent of _numbered_item so the block sits under the text.
+    tblPr = table._tbl.tblPr
+    ind = OxmlElement("w:tblInd")
+    ind.set(qn("w:w"), str(int(Cm(1.0).twips)))
+    ind.set(qn("w:type"), "dxa")
+    tblPr.append(ind)
+    _para(doc, "", space_after=2)
+
+
 def _facilities_table(doc, facilities: list):
     """Three-column evidence table: Lender | Account Type | Status / Notes."""
     headers = ("Lender / Creditor", "Account Type", "Status / Adverse Notes")
@@ -948,6 +975,7 @@ def generate_loc_docx(schema: dict, lender_result, review_warnings: list[str] | 
     _numbered_item(doc, "6.",
         "The firm's client account, to which all payments should be made, is as follows:",
         indent=True)
+    _client_account_block(doc, cfg.get("client_account"))
 
     # ── Our Client's Claim ────────────────────────────────────────────────
     _heading(doc, "Our Client's Claim", underline=True)
