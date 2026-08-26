@@ -348,3 +348,38 @@ def reprocess_as_firm(body: ReprocessAsFirm, db: Session = Depends(get_db)):
         "reports": len(job_ids),
         "status": "processing",
     }
+
+
+class RetryFailed(BaseModel):
+    # Optional substring filter on error_message, e.g. "QueuePool" to retry only
+    # transient DB-pool timeouts and leave genuinely bad reports as FAILED.
+    error_contains: str | None = None
+
+
+@router.post("/{batch_id}/retry-failed", dependencies=[Depends(_require_irl_key)])
+def retry_failed(batch_id: int, body: RetryFailed | None = None, db: Session = Depends(get_db)):
+    """Re-run this batch's FAILED jobs in place (same batch, same tracker).
+    Resets them to PENDING and re-enqueues the pipeline from fetch. Typical use:
+    a handful of jobs failed on a transient error (DB pool timeout at scale-up,
+    bureau fetch hiccup) during a large run. Batch counters are recomputed by
+    deliver.py as each job completes."""
+    batch = db.get(Batch, batch_id)
+    if not batch:
+        raise HTTPException(status_code=404, detail="Batch not found")
+
+    q = select(Job).where(Job.batch_id == batch_id, Job.status == JobStatus.FAILED.value)
+    if body and body.error_contains:
+        q = q.where(Job.error_message.ilike(f"%{body.error_contains}%"))
+    jobs = db.execute(q).scalars().all()
+
+    for j in jobs:
+        j.status = JobStatus.PENDING.value
+        j.error_message = None
+    db.commit()  # persist PENDING before enqueuing so the worker can't race an uncommitted row
+
+    for j in jobs:
+        t = fetch_and_process.apply_async(args=[j.id], queue="fetch")
+        j.celery_task_id = t.id
+    db.commit()
+
+    return {"batch_id": batch_id, "requeued": len(jobs), "job_ids": [j.id for j in jobs]}

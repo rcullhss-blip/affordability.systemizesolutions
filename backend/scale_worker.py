@@ -11,6 +11,11 @@ Usage:
   python scale_worker.py watch 7 [--down-to 1]  # poll batch 7 every 60s, print ETA,
                                                 # scale worker to 1 when it completes
   python scale_worker.py watch 7,8,9            # watch several batches; scale down when ALL done
+  python scale_worker.py failed 7               # list FAILED jobs + error messages
+  python scale_worker.py retry-failed 7 [--match QueuePool]
+                                                # reset FAILED jobs to PENDING and re-run them in
+                                                # the same batch (optionally only those whose error
+                                                # message contains the text)
 
 Cost note: Render prorates instances by the second, so 5 extra Standard
 instances for 3 hours is well under $1. Leaving them on by accident is what
@@ -125,6 +130,36 @@ def cmd_watch(batch_ids: list[int], down_to: int) -> None:
         time.sleep(POLL_SECONDS)
 
 
+BACKEND_SERVICE_ID = "srv-d9sodsijobas73fopbqg"       # systemize-backend (Render)
+
+
+def _irl_key() -> str:
+    """The backend's IRL_CASE_API_KEY (auth for /retry-failed), read from Render."""
+    for it in _render("GET", f"/services/{BACKEND_SERVICE_ID}/env-vars"):
+        if it["envVar"]["key"] == "IRL_CASE_API_KEY":
+            return it["envVar"]["value"]
+    sys.exit("IRL_CASE_API_KEY not found on systemize-backend")
+
+
+def cmd_failed(batch_id: int) -> None:
+    jobs = _backend(f"/batches/{batch_id}/jobs?limit=100000")
+    failed = [j for j in jobs if j["status"] == "FAILED"]
+    print(f"batch {batch_id}: {len(failed)} FAILED of {len(jobs)}")
+    for j in failed:
+        print(f"  job {j['id']:>6} | {(j.get('error_message') or '')[:140]}")
+
+
+def cmd_retry_failed(batch_id: int, match: str | None) -> None:
+    body = json.dumps({"error_contains": match} if match else {}).encode()
+    req = urllib.request.Request(
+        f"{BACKEND}/batches/{batch_id}/retry-failed", method="POST", data=body,
+        headers={"X-API-Key": _irl_key(), "Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(req, timeout=300) as r:
+        res = json.load(r)
+    print(f"batch {batch_id}: re-queued {res['requeued']} job(s): {res['job_ids']}")
+
+
 def main(argv: list[str]) -> None:
     if not argv or argv[0] in ("-h", "--help"):
         print(__doc__)
@@ -134,6 +169,11 @@ def main(argv: list[str]) -> None:
         cmd_status()
     elif cmd == "scale":
         scale(int(argv[1]))
+    elif cmd == "failed":
+        cmd_failed(int(argv[1]))
+    elif cmd == "retry-failed":
+        match = argv[argv.index("--match") + 1] if "--match" in argv else None
+        cmd_retry_failed(int(argv[1]), match)
     elif cmd == "watch":
         ids = [int(x) for x in argv[1].split(",")]
         down_to = 1
