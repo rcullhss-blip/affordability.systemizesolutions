@@ -108,12 +108,24 @@ def cmd_watch(batch_ids: list[int], down_to: int) -> None:
           f"will scale to {down_to} when all complete")
     last = None
     last_t = None
+    errors = 0
     while True:
         done = total = 0
-        for bid in batch_ids:
-            p = progress(bid)
-            done += p["complete"] + p["failed"]
-            total += p["total"]
+        try:
+            for bid in batch_ids:
+                p = progress(bid)
+                done += p["complete"] + p["failed"]
+                total += p["total"]
+            errors = 0
+        except Exception as exc:
+            # Transient (laptop DNS/Wi-Fi blip, backend cold-start): keep watching.
+            # The whole point of this process is the scale-down at the end.
+            errors += 1
+            print(time.strftime("%H:%M:%S"), f"poll failed ({errors}): {exc!s:.120}", flush=True)
+            if errors >= 60:  # ~1h of continuous failure — give up loudly
+                raise
+            time.sleep(POLL_SECONDS)
+            continue
         now = time.time()
         rate = ""
         if last is not None and now > last_t:
@@ -125,8 +137,14 @@ def cmd_watch(batch_ids: list[int], down_to: int) -> None:
         last, last_t = done, now
         if total and done >= total:
             print("batch complete — scaling worker down")
-            scale(down_to)
-            return
+            for attempt in range(30):          # never leave 6 instances running over a blip
+                try:
+                    scale(down_to)
+                    return
+                except Exception as exc:
+                    print(time.strftime("%H:%M:%S"), f"scale-down failed ({attempt + 1}): {exc!s:.120}", flush=True)
+                    time.sleep(POLL_SECONDS)
+            raise SystemExit("could not scale down after 30 attempts — do it manually: scale_worker.py scale 1")
         time.sleep(POLL_SECONDS)
 
 
