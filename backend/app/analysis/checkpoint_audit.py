@@ -18,7 +18,7 @@ enough to trust the format at scale.
 from __future__ import annotations
 
 # Checkpoints during the live ramp — a person reviews the pool at each boundary.
-CHECKPOINTS = (3, 8, 15, 25, 50)
+CHECKPOINTS = (3, 8, 15, 25, 50, 500, 2500, 10000, 25000)  # early ramp + large-run milestones
 
 # Above this share of accounts typed OTHER, the CAIS code map is probably missing
 # codes for this lender population (e.g. 18/29/40/46/60 not yet mapped).
