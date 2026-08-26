@@ -30,8 +30,29 @@ def _queue_backlog() -> dict:
     return {q: int(r.llen(q)) for q in PIPELINE_QUEUES}
 
 
+def _refresh_active_batch_stats():
+    """Authoritative recount of counters for batches with recent activity — the
+    per-job path only does O(1) increments (see app.workers.batch_stats)."""
+    from app.workers.batch_stats import active_batch_ids, recompute_batch_stats
+    db = SessionLocal()
+    try:
+        ids = active_batch_ids(db)
+        for bid in ids:
+            recompute_batch_stats(db, bid)
+        db.commit()
+        if ids:
+            log.info("Watchdog: recounted stats for batch(es) %s", ids)
+    except Exception:
+        db.rollback()
+        log.exception("Watchdog: batch stats recount failed")
+    finally:
+        db.close()
+
+
 @celery_app.task(name="app.workers.watchdog.rescue_stuck_jobs")
 def rescue_stuck_jobs():
+    _refresh_active_batch_stats()
+
     # A job is only "stranded" if nothing in the broker will ever pick it up.
     # On a large batch (e.g. 32k rows created in one upload) most jobs legitimately
     # sit PENDING/FETCHING/... for hours while the queues drain; re-queuing them

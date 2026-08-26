@@ -6,6 +6,7 @@ from app.models.tables import Job, LenderResult, Batch
 from app.analysis.checkpoint_audit import (
     audit_report, is_checkpoint, needs_spot_check, format_checkpoint,
 )
+from app.workers.batch_stats import bump_batch_stats, recompute_batch_stats
 from sqlalchemy import select, update, func
 from datetime import datetime
 
@@ -57,31 +58,13 @@ def deliver_outputs(self, job_id: int):
 
         db.commit()
 
-        # Recompute batch stats cheaply on the DB side (indexed COUNTs) instead of
-        # locking the batch row and loading every job + lender_result into memory.
-        # The old approach was O(n^2) and froze the gevent worker on large batches.
+        # Batch counters: O(1) atomic increments here; the authoritative full
+        # recount runs in the watchdog every 5 min (and at the early checkpoints
+        # below). Recounting on every completion was O(n) per job — on a 32k batch
+        # Postgres CPU climbed and throughput fell ~25% across the run.
         if job.batch_id:
             bid = job.batch_id
-            jc = lambda *conds: (
-                select(func.count()).select_from(Job)
-                .where(Job.batch_id == bid, *conds).scalar_subquery()
-            )
-            db.execute(
-                update(Batch).where(Batch.id == bid).values(
-                    processed             = jc(Job.status == "COMPLETE"),
-                    failed                = jc(Job.status == "FAILED"),
-                    green_count           = jc(Job.status == "COMPLETE", Job.traffic_light == "GREEN"),
-                    amber_count           = jc(Job.status == "COMPLETE", Job.traffic_light == "AMBER"),
-                    red_count             = jc(Job.status == "COMPLETE", Job.traffic_light == "RED"),
-                    assessments_generated = jc(Job.s3_assessment_key.isnot(None)),
-                    locs_generated        = (
-                        select(func.count()).select_from(LenderResult)
-                        .join(Job, LenderResult.job_id == Job.id)
-                        .where(Job.batch_id == bid, LenderResult.loc_generated.is_(True))
-                        .scalar_subquery()
-                    ),
-                )
-            )
+            bump_batch_stats(db, job, results)
             db.commit()
 
             # ── Checkpoint summary at 3 / 8 / 15 / 25 / 50 processed reports ────
@@ -91,6 +74,9 @@ def deliver_outputs(self, job_id: int):
                 batch = db.get(Batch, bid)
                 processed = batch.processed if batch else 0
                 if is_checkpoint(processed):
+                    recompute_batch_stats(db, bid)   # exact figures for the snapshot (n is small here)
+                    db.commit()
+                    db.refresh(batch)
                     jc = lambda *conds: (
                         select(func.count()).select_from(Job)
                         .where(Job.batch_id == bid, *conds).scalar_subquery()

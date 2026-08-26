@@ -127,10 +127,16 @@ def batch_progress(batch_id: int, db: Session = Depends(get_db)):
     if not batch:
         raise HTTPException(status_code=404, detail="Batch not found")
 
-    jobs = db.execute(select(Job).where(Job.batch_id == batch_id)).scalars().all()
-    status_counts = {}
-    for job in jobs:
-        status_counts[job.status] = status_counts.get(job.status, 0) + 1
+    # COUNT ... GROUP BY on the indexed batch_id — not "load every job row",
+    # which on a 32k batch shipped ~30 MB per poll and added DB load mid-run.
+    status_counts = dict(
+        db.execute(
+            select(Job.status, func.count())
+            .where(Job.batch_id == batch_id)
+            .group_by(Job.status)
+        ).all()
+    )
+    n_jobs = sum(status_counts.values())
 
     complete = status_counts.get("COMPLETE", 0)
     failed = status_counts.get("FAILED", 0)
@@ -141,7 +147,7 @@ def batch_progress(batch_id: int, db: Session = Depends(get_db)):
         "total": batch.total_reports,
         "complete": complete,
         "failed": failed,
-        "in_progress": len(jobs) - complete - failed,
+        "in_progress": n_jobs - complete - failed,
         "percent_done": pct,
         "green": batch.green_count,
         "amber": batch.amber_count,
