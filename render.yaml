@@ -89,6 +89,16 @@ services:
         value: worker
       - key: CELERY_WORKER            # smaller DB pool on workers
         value: "1"
+      - key: WORKER_CONCURRENCY       # gevent greenlets per instance; doc-gen is
+        value: "12"                   # CPU-bound on 1 core, 8 DB conns — 25 only added contention
+      # Self-scaling (app.workers.autoscale): 1 instance when idle, up to
+      # WORKER_AUTOSCALE_MAX while work is queued. Needs an ops API key.
+      - key: WORKER_AUTOSCALE
+        value: "1"
+      - key: WORKER_AUTOSCALE_MAX
+        value: "6"
+      - key: RENDER_API_KEY
+        sync: false                    # set in dashboard (secret)
       - key: DATABASE_URL
         fromDatabase:
           name: systemize-db

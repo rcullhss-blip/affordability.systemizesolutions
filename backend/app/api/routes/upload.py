@@ -18,6 +18,9 @@ router = APIRouter()
 
 ALLOWED_EXTENSIONS = {".pdf", ".html", ".htm", ".csv", ".xlsx", ".zip", ".docx", ".json"}
 
+# Above this many URLs a CSV upload is expanded in the background (see upload_csv).
+CSV_INLINE_THRESHOLD = 500
+
 # Match a URL anywhere in a line — not just at the start — so links sitting in a
 # CSV cell alongside other columns (or wrapped in quotes) are still found.
 _URL_RE = re.compile(r'https?://[^\s,"\'<>\\]+', re.IGNORECASE)
@@ -262,8 +265,23 @@ async def upload_csv(
     db.add(batch)
     db.flush()
 
-    # Create + commit all jobs BEFORE enqueuing, so the worker can't race ahead
-    # of an uncommitted job and strand it (same fix as the webhook path).
+    # ── Large CSV: store the URL list and fan out in the background ──────────
+    # Creating 32k+ jobs and enqueuing 32k tasks inside one HTTP request worked
+    # for the Barings batch but is the wrong place for it — a 100k CSV shouldn't
+    # depend on the request staying open. Same manifest pattern as the webhook.
+    if len(urls) > CSV_INLINE_THRESHOLD:
+        import json
+        manifest_key = f"manifests/{uuid.uuid4()}/urls.json"
+        upload_bytes(settings.S3_BUCKET_RAW, manifest_key,
+                     json.dumps(urls).encode("utf-8"), "application/json")
+        db.commit()
+        from app.workers.intake import expand_url_manifest
+        expand_url_manifest.apply_async(args=[batch.id, manifest_key], queue="fetch")
+        return {"batch_id": batch.id, "jobs_created": len(urls), "status": "expanding",
+                "message": f"{len(urls):,} URLs accepted; jobs are being created in the background."}
+
+    # ── Small CSV: create + commit all jobs BEFORE enqueuing, so the worker can't
+    # race ahead of an uncommitted job and strand it (same fix as the webhook path).
     jobs = [Job(batch_id=batch.id, source_url=url, status="PENDING") for url in urls]
     db.add_all(jobs)
     db.commit()

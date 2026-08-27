@@ -182,7 +182,7 @@ def export_tracker_csv(batch_id: int, request: Request, db: Session = Depends(ge
         return func.jsonb_extract_path_text(Job.normalised_data, *keys)
     job_rows = db.execute(
         select(
-            Job.id, Job.created_at, Job.s3_raw_key, Job.s3_assessment_key,
+            Job.id, func.coalesce(Job.completed_at, Job.created_at), Job.s3_raw_key, Job.s3_assessment_key,
             Job.s3_credit_report_key,
             Client.name, Client.dob, Client.address,
             ndp("client", "email"), ndp("client", "phone"),
@@ -223,6 +223,8 @@ def export_tracker_csv(batch_id: int, request: Request, db: Session = Depends(ge
         yield _line(tracker_header_for(batch.firm))
         for (jid, created, raw_key, assess_key, credit_key, c_name, c_dob, c_addr,
              email, phone, nd_name, nd_dob, nd_addr, lead_ref, cfa) in job_rows:
+            # Per-case completion time (creation as fallback) — previously every row
+            # carried the batch upload time, which told the partner nothing.
             ts = created.strftime("%d/%m/%Y %H:%M") if created else ""
             title, first_name, surname = split_name((c_name or "") or (nd_name or ""))
             dob = (str(c_dob) if c_dob else "") or (nd_dob or "")

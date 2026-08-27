@@ -3,6 +3,8 @@ Watchdog — runs every 5 minutes via Celery Beat.
 Finds jobs stranded in a mid-pipeline state (worker was killed) and re-queues
 them from the correct stage so no manual intervention is ever needed.
 """
+
+from __future__ import annotations
 import logging
 from datetime import datetime, timezone, timedelta
 from celery import shared_task
@@ -86,21 +88,63 @@ def rescue_stuck_jobs():
             )
         ).scalars().all()
 
-        if not stuck:
-            return
+        if stuck:
+            log.warning("Watchdog: %d stuck job(s) found — re-queuing", len(stuck))
+            for job in stuck:
+                _requeue(job)
+            db.commit()
+            log.info("Watchdog: rescued %d job(s)", len(stuck))
 
-        log.warning("Watchdog: %d stuck job(s) found — re-queuing", len(stuck))
-
-        for job in stuck:
-            _requeue(job)
-
-        db.commit()
-        log.info("Watchdog: rescued %d job(s)", len(stuck))
+        # ── Auto-retry transient failures, once ────────────────────────────────
+        # A job that FAILED on infrastructure noise (DB pool timeout during a
+        # scale-up burst, a bureau fetch that reset) is re-run in place when the
+        # queues are empty. Anything else — a genuinely bad report — stays FAILED
+        # for a human, and so does a job that already had its one retry.
+        retried = _retry_transient_failures(db)
+        if retried:
+            db.commit()
+            log.warning("Watchdog: auto-retried %d transient failure(s): %s", len(retried), retried)
 
     except Exception:
         log.exception("Watchdog error")
     finally:
         db.close()
+
+
+# Error-message fragments that mean "the infrastructure hiccupped", not "the
+# report is bad". Matched case-insensitively against Job.error_message.
+TRANSIENT_ERROR_PATTERNS = (
+    "queuepool limit",            # SQLAlchemy pool exhausted under a burst
+    "connection timed out",
+    "operationalerror",           # Postgres connection dropped / restarted
+    "readerror", "readtimeout", "connecterror", "connecttimeout",  # httpx
+    "connection reset", "remotedisconnected", "sslerror",
+    "fetch failed (502", "fetch failed (503", "fetch failed (504",
+)
+MAX_AUTO_RETRIES = 1
+
+
+def _is_transient(message: str | None) -> bool:
+    m = (message or "").lower()
+    return any(p in m for p in TRANSIENT_ERROR_PATTERNS)
+
+
+def _retry_transient_failures(db) -> list[int]:
+    """Reset FAILED-on-transient-error jobs (with retries left) to PENDING and
+    re-queue them from the furthest safe checkpoint. Returns the job ids."""
+    candidates = db.execute(
+        select(Job).where(Job.status == "FAILED", Job.retry_count < MAX_AUTO_RETRIES)
+    ).scalars().all()
+    retried: list[int] = []
+    for job in candidates:
+        if not _is_transient(job.error_message):
+            continue
+        job.retry_count = (job.retry_count or 0) + 1
+        job.error_message = None
+        job.status = "PENDING"
+        _requeue(job)          # PENDING + raw key -> extract; no raw key -> fetch
+        retried.append(job.id)
+    return retried
 
 
 def _requeue(job: Job):

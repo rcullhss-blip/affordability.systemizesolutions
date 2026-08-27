@@ -16,6 +16,7 @@ celery_app = Celery(
         "app.workers.watchdog",
         "app.workers.retention",
         "app.workers.irl_outcome",
+        "app.workers.autoscale",
     ],
 )
 
@@ -39,8 +40,13 @@ celery_app.conf.update(
         "app.workers.watchdog.*": {"queue": "watchdog"},
         "app.workers.retention.*": {"queue": "watchdog"},
         "app.workers.irl_outcome.*": {"queue": "deliver"},
+        "app.workers.autoscale.*": {"queue": "watchdog"},
     },
     beat_schedule={
+        "autoscale-every-2-minutes": {
+            "task": "app.workers.autoscale.autoscale_workers",
+            "schedule": 120.0,  # up fast after an upload; down after 5 idle ticks (~10 min)
+        },
         "watchdog-every-5-minutes": {
             "task": "app.workers.watchdog.rescue_stuck_jobs",
             "schedule": 300.0,  # every 5 minutes

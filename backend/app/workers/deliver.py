@@ -12,7 +12,18 @@ from datetime import datetime
 
 log = logging.getLogger("checkpoint")
 
-SPOT_CHECK_RATE = 0.025  # 25 in 1000 completed jobs flagged for review
+SPOT_CHECK_RATE = 0.025  # 25 in 1000 completed jobs flagged for review (small batches)
+# On large batches a flat 2.5% is unreviewable (32k reports -> ~800 random flags),
+# so the random rate is scaled to yield about this many per batch. Audit-driven
+# flags (parser gaps, scoring misses) are never capped.
+SPOT_CHECK_MAX_RANDOM_PER_BATCH = 100
+
+
+def _spot_check_rate(job: Job) -> float:
+    total = getattr(getattr(job, "batch", None), "total_reports", 0) or 0
+    if total <= 0:
+        return SPOT_CHECK_RATE
+    return min(SPOT_CHECK_RATE, SPOT_CHECK_MAX_RANDOM_PER_BATCH / total)
 
 
 @celery_app.task(bind=True, max_retries=2, default_retry_delay=30)
@@ -53,7 +64,7 @@ def deliver_outputs(self, job_id: int):
         job.normalised_data = None
 
         # Randomly flag for spot check (on top of any audit-driven flag above)
-        if not job.spot_check_required and random.random() < SPOT_CHECK_RATE:
+        if not job.spot_check_required and random.random() < _spot_check_rate(job):
             job.spot_check_required = True
 
         db.commit()

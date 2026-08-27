@@ -66,6 +66,8 @@ class Job(Base):
     completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     spot_check_required: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     spot_check_reviewed: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    # Watchdog auto-retries of a transient failure (DB pool timeout, fetch hiccup).
+    retry_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     # Instructing firm / destination solicitor brand for LOC letterhead (per-case,
     # overrides batch.firm). For IRL cases this is the PCP platform's destination.brand_id.
     firm: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)

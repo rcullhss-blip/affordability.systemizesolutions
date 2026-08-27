@@ -157,6 +157,62 @@ def expand_s3_prefix(self, batch_id: int, prefix: str, skip_existing: bool = Tru
         db.close()
 
 
+@celery_app.task(bind=True, max_retries=2, default_retry_delay=60)
+def expand_url_manifest(self, batch_id: int, s3_manifest_key: str):
+    """
+    Large CSV-of-URLs upload: the HTTP handler stores the URL list as a JSON
+    manifest and returns immediately; this creates one Job + one fetch task per
+    URL in committed chunks (same shape as expand_proclaim_batch). Idempotent on
+    retry: URLs that already have a job in this batch are skipped.
+    """
+    from sqlalchemy import select
+    from app.workers.fetch import fetch_and_process
+
+    db = SessionLocal()
+    try:
+        batch = db.get(Batch, batch_id)
+        if not batch:
+            return
+
+        urls = json.loads(download_bytes(settings.S3_BUCKET_RAW, s3_manifest_key))
+        existing = set(
+            db.execute(select(Job.source_url).where(Job.batch_id == batch_id)).scalars()
+        )
+        urls = [u for u in urls if u not in existing]
+
+        chunk: list[Job] = []
+
+        def _dispatch(jobs: list[Job]):
+            if not jobs:
+                return
+            db.commit()  # persist before enqueue so the worker can always find the row
+            for j in jobs:
+                t = fetch_and_process.apply_async(args=[j.id], queue="fetch")
+                j.celery_task_id = t.id
+            db.commit()
+
+        for url in urls:
+            chunk.append(Job(batch_id=batch_id, source_url=url, status="PENDING"))
+            db.add(chunk[-1])
+            if len(chunk) >= COMMIT_CHUNK:
+                _dispatch(chunk)
+                chunk = []
+        _dispatch(chunk)
+
+        # Kick the autoscaler now rather than waiting for its next beat tick.
+        try:
+            from app.workers.autoscale import autoscale_workers
+            autoscale_workers.apply_async(queue="watchdog")
+        except Exception:
+            pass
+
+    except Exception as exc:
+        db.rollback()
+        raise self.retry(exc=exc)
+    finally:
+        db.close()
+
+
 _REPORT_EXTENSIONS = (".json", ".pdf", ".html", ".htm", ".docx", ".xlsx")
 
 
