@@ -13,6 +13,12 @@ from app.models.tables import Batch, Job
 from app.models.enums import JobStatus
 from app.workers.fetch import fetch_and_process
 from app.api.routes.webhook import _require_api_key
+from app.core.auth import Principal, require_auth
+
+
+def _effective_firm(p: Principal, requested: str) -> str:
+    """Firm users always upload under their own firm; admins choose."""
+    return p.firm if (not p.is_admin and p.firm) else requested
 
 router = APIRouter()
 
@@ -62,14 +68,16 @@ async def upload_file(
     batch_name: str = Form(...),
     firm: str = Form("first_legal"),
     db: Session = Depends(get_db),
+    p: Principal = Depends(require_auth),
 ):
+    firm = _effective_firm(p, firm)
     fmt = _detect_format(file.filename or "")
     if fmt == "unknown":
         raise HTTPException(status_code=400, detail="Unsupported file format")
 
     # If someone sends a CSV to this endpoint, route it to the URL-list handler
     if fmt == ".csv":
-        return await upload_csv(file=file, batch_name=batch_name, firm=firm, db=db)
+        return await upload_csv(file=file, batch_name=batch_name, firm=firm, db=db, p=p)
 
     raw_bytes = await file.read()
     s3_key = f"raw/{uuid.uuid4()}/{file.filename}"
@@ -98,6 +106,7 @@ async def upload_files(
     firm: str = Form("first_legal"),
     batch_id: Optional[int] = Form(None),
     db: Session = Depends(get_db),
+    p: Principal = Depends(require_auth),
 ):
     """Accept many report files at once (e.g. a dragged-in folder). Creates ONE
     batch with one job per supported file. Returns the received/created counts so
@@ -105,6 +114,7 @@ async def upload_files(
 
     Pass an existing `batch_id` to append these files to that batch — this lets a
     large folder be uploaded in chunks (e.g. 200 at a time) while staying one batch."""
+    firm = _effective_firm(p, firm)
     received = len(files)
     supported = [
         f for f in files
@@ -159,8 +169,10 @@ async def upload_zip(
     batch_name: str = Form(...),
     firm: str = Form("first_legal"),
     db: Session = Depends(get_db),
+    p: Principal = Depends(require_auth),
 ):
     """Accept a ZIP of credit report files. Creates one job per supported file inside the ZIP."""
+    firm = _effective_firm(p, firm)
     content = await file.read()
     try:
         zf = zipfile.ZipFile(io.BytesIO(content))
@@ -251,8 +263,10 @@ async def upload_csv(
     batch_name: str = Form(...),
     firm: str = Form("first_legal"),
     db: Session = Depends(get_db),
+    p: Principal = Depends(require_auth),
 ):
     """Accept a CSV of report URLs, create one job per row."""
+    firm = _effective_firm(p, firm)
     content = await file.read()
     # Strip UTF-8 BOM if present, then pull URLs from anywhere in the file.
     raw = content.lstrip(b"\xef\xbb\xbf")

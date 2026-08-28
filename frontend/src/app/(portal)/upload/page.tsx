@@ -1,5 +1,6 @@
 "use client";
 import { useRef, useState, useCallback } from "react";
+import { authHeaders, getToken } from "@/lib/auth";
 
 const API = process.env.NEXT_PUBLIC_API_URL || "https://systemize-backend.onrender.com";
 // Instructing firm for this portal — each firm's deployment sets NEXT_PUBLIC_FIRM
@@ -171,7 +172,7 @@ export default function UploadPortalPage() {
 
         const res = await fetch(`${API}/api/v1/upload/files`, {
           method: "POST",
-          headers: { "bypass-tunnel-reminder": "true" },
+          headers: { "bypass-tunnel-reminder": "true", ...authHeaders() },
           body: form,
         });
         if (!res.ok) {
@@ -224,6 +225,8 @@ export default function UploadPortalPage() {
     const xhr = new XMLHttpRequest();
     xhr.open("POST", `${API}${endpoint}`);
     xhr.setRequestHeader("bypass-tunnel-reminder", "true");
+    const token = getToken();
+    if (token) xhr.setRequestHeader("Authorization", `Bearer ${token}`);
 
     xhr.upload.addEventListener("progress", (e) => {
       if (e.lengthComputable) {

@@ -11,6 +11,14 @@ from app.core.storage import get_download_url, download_bytes
 from app.core.config import settings
 from app.core.lender_blocklist import is_blocked
 from app.models.tables import Job
+from app.core.auth import Principal, require_auth, require_admin
+
+
+def _job_for(p: Principal, job, detail="Job not found"):
+    """404 (not 403) when a firm user reaches for another firm's job."""
+    if not job or not p.can_access_firm(job.batch.firm if job.batch else None):
+        raise HTTPException(status_code=404, detail=detail)
+    return job
 
 router = APIRouter()
 
@@ -19,7 +27,7 @@ class FeedbackIn(BaseModel):
     note: str
 
 
-@router.get("/spot-checks")
+@router.get("/spot-checks", dependencies=[Depends(require_admin)])
 def get_spot_checks(db: Session = Depends(get_db)):
     """Return all jobs flagged for spot check that haven't been reviewed yet."""
     jobs = db.execute(
@@ -41,7 +49,7 @@ def get_spot_checks(db: Session = Depends(get_db)):
     ]
 
 
-@router.get("/feedback/open")
+@router.get("/feedback/open", dependencies=[Depends(require_admin)])
 def get_open_feedback(db: Session = Depends(get_db)):
     """All unresolved feedback across all jobs — for the admin dashboard queue."""
     rows = db.execute(
@@ -67,14 +75,13 @@ def get_open_feedback(db: Session = Depends(get_db)):
 
 
 @router.get("/{job_id}")
-def get_job(job_id: int, db: Session = Depends(get_db)):
+def get_job(job_id: int, db: Session = Depends(get_db), p: Principal = Depends(require_auth)):
     job = db.execute(
         select(Job)
         .where(Job.id == job_id)
-        .options(selectinload(Job.lender_results), selectinload(Job.client))
+        .options(selectinload(Job.lender_results), selectinload(Job.client), selectinload(Job.batch))
     ).scalar_one_or_none()
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
+    job = _job_for(p, job)
     return {
         "id": job.id,
         "batch_id": job.batch_id,
@@ -111,21 +118,20 @@ def get_job(job_id: int, db: Session = Depends(get_db)):
 
 
 @router.get("/{job_id}/download/assessment")
-def download_assessment(job_id: int, db: Session = Depends(get_db)):
-    job = db.get(Job, job_id)
-    if not job or not job.s3_assessment_key:
+def download_assessment(job_id: int, db: Session = Depends(get_db), p: Principal = Depends(require_auth)):
+    job = _job_for(p, db.get(Job, job_id), "Assessment not available")
+    if not job.s3_assessment_key:
         raise HTTPException(status_code=404, detail="Assessment not available")
     url = get_download_url(settings.S3_BUCKET_OUTPUTS, job.s3_assessment_key)
     return {"url": url}
 
 
 @router.get("/{job_id}/download/locs")
-def download_locs(job_id: int, db: Session = Depends(get_db)):
+def download_locs(job_id: int, db: Session = Depends(get_db), p: Principal = Depends(require_auth)):
     job = db.execute(
-        select(Job).where(Job.id == job_id).options(selectinload(Job.lender_results))
+        select(Job).where(Job.id == job_id).options(selectinload(Job.lender_results), selectinload(Job.batch))
     ).scalar_one_or_none()
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
+    job = _job_for(p, job)
 
     urls = []
     for result in job.lender_results:
@@ -139,12 +145,11 @@ def download_locs(job_id: int, db: Session = Depends(get_db)):
 
 
 @router.get("/{job_id}/download/locs/zip")
-def download_locs_zip(job_id: int, db: Session = Depends(get_db)):
+def download_locs_zip(job_id: int, db: Session = Depends(get_db), p: Principal = Depends(require_auth)):
     job = db.execute(
-        select(Job).where(Job.id == job_id).options(selectinload(Job.lender_results), selectinload(Job.client))
+        select(Job).where(Job.id == job_id).options(selectinload(Job.lender_results), selectinload(Job.client), selectinload(Job.batch))
     ).scalar_one_or_none()
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
+    job = _job_for(p, job)
 
     locs = [r for r in job.lender_results if r.loc_generated and r.s3_loc_key]
     if not locs:
@@ -173,7 +178,7 @@ def download_locs_zip(job_id: int, db: Session = Depends(get_db)):
     )
 
 
-@router.post("/{job_id}/spot-check/reviewed")
+@router.post("/{job_id}/spot-check/reviewed", dependencies=[Depends(require_admin)])
 def mark_spot_check_reviewed(job_id: int, db: Session = Depends(get_db)):
     """Mark a spot-checked job as reviewed by admin."""
     job = db.get(Job, job_id)
@@ -184,7 +189,7 @@ def mark_spot_check_reviewed(job_id: int, db: Session = Depends(get_db)):
     return {"ok": True}
 
 
-@router.post("/{job_id}/feedback")
+@router.post("/{job_id}/feedback", dependencies=[Depends(require_admin)])
 def submit_feedback(job_id: int, body: FeedbackIn, db: Session = Depends(get_db)):
     """Log an issue or correction note against a job."""
     job = db.get(Job, job_id)
@@ -198,7 +203,7 @@ def submit_feedback(job_id: int, body: FeedbackIn, db: Session = Depends(get_db)
     return {"ok": True}
 
 
-@router.get("/{job_id}/feedback")
+@router.get("/{job_id}/feedback", dependencies=[Depends(require_admin)])
 def get_feedback(job_id: int, db: Session = Depends(get_db)):
     rows = db.execute(
         text("SELECT id, note, created_at, resolved FROM job_feedback WHERE job_id = :id ORDER BY created_at DESC"),
@@ -207,7 +212,7 @@ def get_feedback(job_id: int, db: Session = Depends(get_db)):
     return [{"id": r.id, "note": r.note, "created_at": r.created_at.isoformat(), "resolved": r.resolved} for r in rows]
 
 
-@router.post("/feedback/{feedback_id}/resolved")
+@router.post("/feedback/{feedback_id}/resolved", dependencies=[Depends(require_admin)])
 def resolve_feedback(feedback_id: int, db: Session = Depends(get_db)):
     db.execute(
         text("UPDATE job_feedback SET resolved = TRUE WHERE id = :id"),

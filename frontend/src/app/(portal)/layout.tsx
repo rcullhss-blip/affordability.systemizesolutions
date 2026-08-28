@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import "./portal.css";
+import { RequireAuth } from "@/components/auth/RequireAuth";
 
 const FIRM = process.env.NEXT_PUBLIC_FIRM || "first_legal";
 const FIRM_NAME = FIRM === "barings" ? "Barings Law"
@@ -12,5 +13,5 @@ export const metadata: Metadata = {
 };
 
 export default function PortalLayout({ children }: { children: React.ReactNode }) {
-  return <>{children}</>;
+  return <RequireAuth>{children}</RequireAuth>;
 }

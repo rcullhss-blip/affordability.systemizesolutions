@@ -32,6 +32,23 @@ class Batch(Base):
     jobs: Mapped[list["Job"]] = relationship("Job", back_populates="batch")
 
 
+class User(Base):
+    """Dashboard / portal sign-in. role 'admin' sees everything; role 'firm' is
+    scoped to `firm` (the instructing solicitor key used on Batch.firm)."""
+    __tablename__ = "users"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    email: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    password_hash: Mapped[str] = mapped_column(String(255))
+    role: Mapped[str] = mapped_column(String(20), default="firm", server_default="firm")
+    firm: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    last_login_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    password_changed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
 class Client(Base):
     __tablename__ = "clients"
 

@@ -67,7 +67,7 @@ export async function middleware(request: NextRequest) {
   let response: NextResponse;
 
   // Portal domain — upload only, no admin routes
-  if (PORTAL_HOSTS.some((h) => host.includes(h)) && !pathname.startsWith("/upload")) {
+  if (PORTAL_HOSTS.some((h) => host.includes(h)) && !pathname.startsWith("/upload") && !pathname.startsWith("/login")) {
     response = NextResponse.redirect(new URL("/upload", request.url));
   } else {
     response = NextResponse.next();

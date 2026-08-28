@@ -14,6 +14,7 @@ from pydantic import BaseModel
 from app.models.tables import Batch, Job, Client, LenderResult, Case
 from app.models.enums import JobStatus
 from app.api.routes.webhook import _require_irl_key
+from app.core.auth import Principal, require_auth, assert_firm_access
 from app.workers.fetch import fetch_and_process
 from app.documents.tracker_csv import (
     TL_LABELS, split_name, split_address, decorate_rows, tracker_header_for, format_dob,
@@ -96,22 +97,31 @@ def _serialise_job(job):
     }
 
 
-@router.get("/")
-def list_batches(skip: int = 0, limit: int = 50, db: Session = Depends(get_db)):
-    batches = db.execute(select(Batch).order_by(Batch.created_at.desc()).offset(skip).limit(limit)).scalars().all()
-    return batches
-
-
-@router.get("/{batch_id}")
-def get_batch(batch_id: int, db: Session = Depends(get_db)):
+def _get_batch_for(p: Principal, batch_id: int, db: Session) -> Batch:
+    """Load a batch the caller may see. Firm users get 404 (not 403) for other
+    firms' batches so ids can't be enumerated."""
     batch = db.get(Batch, batch_id)
-    if not batch:
+    if not batch or not p.can_access_firm(batch.firm):
         raise HTTPException(status_code=404, detail="Batch not found")
     return batch
 
 
+@router.get("/")
+def list_batches(skip: int = 0, limit: int = 50, db: Session = Depends(get_db), p: Principal = Depends(require_auth)):
+    q = select(Batch).order_by(Batch.created_at.desc())
+    if not p.is_admin:
+        q = q.where(Batch.firm == p.firm)
+    return db.execute(q.offset(skip).limit(limit)).scalars().all()
+
+
+@router.get("/{batch_id}")
+def get_batch(batch_id: int, db: Session = Depends(get_db), p: Principal = Depends(require_auth)):
+    return _get_batch_for(p, batch_id, db)
+
+
 @router.get("/{batch_id}/jobs")
-def get_batch_jobs(batch_id: int, db: Session = Depends(get_db)):
+def get_batch_jobs(batch_id: int, db: Session = Depends(get_db), p: Principal = Depends(require_auth)):
+    _get_batch_for(p, batch_id, db)
     jobs = db.execute(
         select(Job)
         .where(Job.batch_id == batch_id)
@@ -122,10 +132,8 @@ def get_batch_jobs(batch_id: int, db: Session = Depends(get_db)):
 
 
 @router.get("/{batch_id}/progress")
-def batch_progress(batch_id: int, db: Session = Depends(get_db)):
-    batch = db.get(Batch, batch_id)
-    if not batch:
-        raise HTTPException(status_code=404, detail="Batch not found")
+def batch_progress(batch_id: int, db: Session = Depends(get_db), p: Principal = Depends(require_auth)):
+    batch = _get_batch_for(p, batch_id, db)
 
     # COUNT ... GROUP BY on the indexed batch_id — not "load every job row",
     # which on a 32k batch shipped ~30 MB per poll and added DB load mid-run.
@@ -169,12 +177,11 @@ def _file_url(bucket: str, key: str | None, base_url: str = _FALLBACK_BASE) -> s
 
 
 @router.get("/{batch_id}/export/tracker")
-def export_tracker_csv(batch_id: int, request: Request, db: Session = Depends(get_db)):
+def export_tracker_csv(batch_id: int, request: Request, db: Session = Depends(get_db),
+                       p: Principal = Depends(require_auth)):
     """Proclaim-ready tracker CSV — one row per LOC. Streamed, and pulls only the
     fields it needs (not the full report JSON) so it scales to large batches."""
-    batch = db.get(Batch, batch_id)
-    if not batch:
-        raise HTTPException(status_code=404, detail="Batch not found")
+    batch = _get_batch_for(p, batch_id, db)
 
     # Extract only the client sub-fields we need, server-side — never load the
     # full normalised_data blob into memory (that was the slowness).
@@ -291,7 +298,7 @@ def export_tracker_by_partner(
     if not _batch_is_ready(db, batch):
         # Still processing — empty body signals "not ready, retry later".
         return Response(status_code=200, media_type="text/csv", content=b"")
-    return export_tracker_csv(batch.id, request, db)
+    return export_tracker_csv(batch.id, request, db, Principal(role="admin", via_api_key=True))
 
 
 class ReprocessAsFirm(BaseModel):

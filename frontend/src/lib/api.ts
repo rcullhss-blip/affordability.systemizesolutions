@@ -1,4 +1,5 @@
 import axios from "axios";
+import { getToken, clearSession, withToken } from "@/lib/auth";
 
 const BASE = process.env.NEXT_PUBLIC_API_URL || "https://systemize-backend.onrender.com";
 
@@ -6,6 +7,54 @@ export const api = axios.create({
   baseURL: BASE,
   headers: { "bypass-tunnel-reminder": "true" },
 });
+
+// Every API call carries the session token; a 401 means the session is gone
+// (expired, password reset, account disabled) — send the user to sign in.
+api.interceptors.request.use((config) => {
+  const t = getToken();
+  if (t) config.headers.Authorization = `Bearer ${t}`;
+  return config;
+});
+api.interceptors.response.use(
+  (r) => r,
+  (err) => {
+    const status = err?.response?.status;
+    const url: string = err?.config?.url || "";
+    if (status === 401 && typeof window !== "undefined" && !url.includes("/auth/login")) {
+      clearSession();
+      const here = window.location.pathname + window.location.search;
+      if (!here.startsWith("/login")) window.location.href = `/login?next=${encodeURIComponent(here)}`;
+    }
+    return Promise.reject(err);
+  },
+);
+
+// ── Auth ───────────────────────────────────────────────────────────────────
+
+export async function listUsers() {
+  const { data } = await api.get("/api/v1/auth/users");
+  return data;
+}
+
+export async function createUser(body: { email: string; password: string; name?: string; role: "admin" | "firm"; firm?: string | null }) {
+  const { data } = await api.post("/api/v1/auth/users", body);
+  return data;
+}
+
+export async function resetUserPassword(userId: number, new_password: string) {
+  const { data } = await api.post(`/api/v1/auth/users/${userId}/reset-password`, { new_password });
+  return data;
+}
+
+export async function setUserActive(userId: number, active: boolean) {
+  const { data } = await api.post(`/api/v1/auth/users/${userId}/${active ? "activate" : "deactivate"}`);
+  return data;
+}
+
+export async function changePassword(current_password: string, new_password: string) {
+  const { data } = await api.post("/api/v1/auth/change-password", { current_password, new_password });
+  return data;
+}
 
 // ── Batches ────────────────────────────────────────────────────────────────
 
@@ -24,12 +73,14 @@ export async function getBatchProgress(id: number) {
   return data;
 }
 
+// Download links are plain <a href>s, so the token travels as ?token= instead
+// of a header (the API accepts either).
 export function getTrackerCsvUrl(batchId: number): string {
-  return `${BASE}/api/v1/batches/${batchId}/export/tracker`;
+  return withToken(`${BASE}/api/v1/batches/${batchId}/export/tracker`);
 }
 
 export function getLocsZipUrl(jobId: number): string {
-  return `${BASE}/api/v1/jobs/${jobId}/download/locs/zip`;
+  return withToken(`${BASE}/api/v1/jobs/${jobId}/download/locs/zip`);
 }
 
 export async function getBatchJobs(id: number) {

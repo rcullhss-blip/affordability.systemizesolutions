@@ -2,6 +2,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useState, useEffect } from "react";
+import { getUser, signOut } from "@/lib/auth";
 
 const NAV = [
   { label: "Dashboard", href: "/" },
@@ -9,13 +10,16 @@ const NAV = [
   { label: "Cases",     href: "/cases" },
   { label: "Clients",   href: "/clients" },
   { label: "Analytics", href: "/analytics" },
+  { label: "Users",     href: "/users" },
 ];
 
 export function Sidebar() {
   const pathname = usePathname();
   const [open, setOpen] = useState(false);
+  const [email, setEmail] = useState<string>("");
 
   useEffect(() => { setOpen(false); }, [pathname]);
+  useEffect(() => { setEmail(getUser()?.email || ""); }, []);
 
   // Lock body scroll when mobile nav is open
   useEffect(() => {
@@ -111,9 +115,12 @@ export function Sidebar() {
 
         {navLinks}
 
-        <div className="pt-4 border-t border-gray-800">
-          <p className="text-xs text-gray-600">Fintech-grade legal infrastructure</p>
-          <p className="text-xs text-gray-700 mt-0.5">v2.0</p>
+        <div className="pt-4 border-t border-gray-800 space-y-2">
+          {email && <p className="text-xs text-gray-400 truncate" title={email}>{email}</p>}
+          <button onClick={() => signOut()} className="text-xs text-gray-500 hover:text-white underline">
+            Sign out
+          </button>
+          <p className="text-xs text-gray-700 pt-1">v2.1</p>
         </div>
       </aside>
     </>

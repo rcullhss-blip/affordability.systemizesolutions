@@ -23,6 +23,11 @@ class Settings(BaseSettings):
     PCP_OUTCOME_URL: str = ""       # e.g. https://api-production-ae9a.up.railway.app/api/v1/webhook/irl-outcome
     PCP_OUTCOME_API_KEY: str = ""   # X-API-Key we send (the Hub's IRL_INBOUND_API_KEY / sk_irlout_*)
 
+    # ── Dashboard / portal sign-in (see app.core.auth) ────────────────────────
+    # First-run bootstrap: creates this admin if the users table is empty.
+    ADMIN_EMAIL: str = ""
+    ADMIN_PASSWORD: str = ""
+
     # ── Worker self-scaling on Render (see app.workers.autoscale) ────────────
     RENDER_API_KEY: str = ""                 # ops key; also used by scale_worker.py locally
     RENDER_WORKER_SERVICE_ID: str = ""       # defaults to Render's own RENDER_SERVICE_ID
