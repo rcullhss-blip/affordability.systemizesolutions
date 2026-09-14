@@ -25,7 +25,7 @@ from app.models.tables import User
 
 router = APIRouter()
 
-FIRMS = ("first_legal", "barings", "accord", "ryans", "tr_sols", "woodville")
+FIRMS = ("first_legal", "barings", "accord", "ryans", "tr_sols", "jf_law", "woodville")
 
 
 def _public(u: User) -> dict:

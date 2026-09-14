@@ -9,6 +9,7 @@ const FIRMS: { key: string; label: string }[] = [
   { key: "accord", label: "Accord Solicitors" },
   { key: "ryans", label: "Ryans Solicitors" },
   { key: "tr_sols", label: "TR Sols" },
+  { key: "jf_law", label: "JF Law" },
   { key: "woodville", label: "Woodville" },
 ];
 

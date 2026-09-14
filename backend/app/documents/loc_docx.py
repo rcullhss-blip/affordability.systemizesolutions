@@ -102,6 +102,25 @@ FIRM_CONFIGS = {
         "closing": "Yours faithfully,",
         "signoff": ["TR Sols", "[TR SOLS ADDRESS — TO BE CONFIRMED]"],
     },
+    # JF Law (London) Ltd — 6th sols brand and the first IRL CRM firm. Logo
+    # supplied 14 Sep 2026 (1536x516 wordmark, ~3:1). Address + SRA number
+    # confirmed by JF Law 14 Sep 2026; company number and registered office
+    # from Companies House (14661683). TODO(jf_law): add "client_account" bank
+    # details (see ryans) once JF Law supply them — LOC para 6 is empty until then.
+    "jf_law": {
+        "name":    "JF Law",
+        "address": "45 Fitzroy Street, London, W1T 6EB",
+        "logo":    os.path.join(_DOC_DIR, "jf-law-logo.png"),
+        "logo_w":  4.6,  # cm — wide horizontal wordmark (1536x516, ~3:1) → ~1.5 cm tall
+        "footer1": ("Please ensure that all correspondence is sent to our London Office: "
+                    "45 Fitzroy Street, London, W1T 6EB."),
+        "footer2": ("JF Law (London) Ltd is authorised and regulated by the Solicitors Regulation "
+                    "Authority under registration number 8003815. Registered in England and Wales "
+                    "with Company Number: 14661683. Registered Office at 45 Fitzroy Street, "
+                    "London, England, W1T 6EB."),
+        "closing": "Yours faithfully,",
+        "signoff": ["JF Law", "45 Fitzroy Street, London, W1T 6EB"],
+    },
 }
 
 # Brand ids the platform recognises. Inbound IRL cases are validated against this
