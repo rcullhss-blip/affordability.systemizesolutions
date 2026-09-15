@@ -11,9 +11,12 @@ outcome has not yet been delivered, POST the result to the PCP platform's
     hammering the endpoint forever.
 """
 import logging
+import time
+import uuid
 from datetime import datetime
 
 import httpx
+from sqlalchemy import or_
 from sqlalchemy.orm import selectinload
 
 from app.core.celery_app import celery_app
@@ -29,10 +32,36 @@ from app.models.tables import Case, Job, LenderResult
 
 log = logging.getLogger("irl_outcome")
 
-MAX_ATTEMPTS = 8      # after this a case is parked as OUTCOME_FAILED (requeue by resetting attempts)
+MAX_ATTEMPTS = 30     # after this a case is parked as OUTCOME_FAILED (requeue by resetting attempts)
 # Cases per tick. Raised for bulk partner runs (e.g. Woodville 100k) so per-client
 # postbacks keep pace with the throttled runner's completion rate.
 BATCH_LIMIT = 500
+
+# One sweep at a time. Beat fires every minute, but against a slow PCP endpoint a
+# sweep can take far longer; overlapping sweeps then re-post the same unsent cases
+# and exhaust the worker's DB pool (JF Law run, 15 Sep 2026: ~13 concurrent sweeps).
+# A sweep stops taking new cases after SWEEP_BUDGET_SECONDS; the next tick resumes.
+SWEEP_LOCK_KEY = "systemize:irl_outcome:sweep_lock"
+SWEEP_BUDGET_SECONDS = 300
+SWEEP_LOCK_TTL_SECONDS = 600   # > budget + one 30s post, so a killed sweep can't wedge the lock
+
+
+def _acquire_sweep_lock():
+    import redis
+    r = redis.Redis.from_url(settings.REDIS_URL, socket_timeout=5)
+    token = uuid.uuid4().hex
+    if r.set(SWEEP_LOCK_KEY, token, nx=True, ex=SWEEP_LOCK_TTL_SECONDS):
+        return r, token
+    return None
+
+
+def _release_sweep_lock(lock) -> None:
+    r, token = lock
+    try:
+        if r.get(SWEEP_LOCK_KEY) == token.encode():
+            r.delete(SWEEP_LOCK_KEY)
+    except Exception:
+        log.warning("Outcome sweep: could not release lock (expires in %ss)", SWEEP_LOCK_TTL_SECONDS)
 
 # Internal traffic light -> the partner tracker's Analysis Status label.
 _ANALYSIS_STATUS = {"GREEN": "Strong", "AMBER": "Mid", "RED": "Weak"}
@@ -173,8 +202,17 @@ def post_case_outcomes():
     if not settings.PCP_OUTCOME_URL:
         return {"skipped": "PCP_OUTCOME_URL not configured"}
 
-    db = SessionLocal()
+    lock = _acquire_sweep_lock()
+    if lock is None:
+        return {"skipped": "previous sweep still running"}
+
+    try:
+        db = SessionLocal()
+    except Exception:
+        _release_sweep_lock(lock)
+        raise
     sent = failed = 0
+    started = time.monotonic()
     try:
         rows = (
             db.query(Case, Job)
@@ -182,9 +220,12 @@ def post_case_outcomes():
             .options(selectinload(Job.client))   # tracker needs client name/address; avoid an N+1
             .filter(
                 Case.outcome_sent.is_(False),
-                Case.status != "OUTCOME_FAILED",
+                # Parked cases below the cap are swept again (un-parks cases whose
+                # attempts were inflated by overlapping sweeps before the lock existed).
+                or_(Case.status != "OUTCOME_FAILED", Case.outcome_attempts < MAX_ATTEMPTS),
                 Job.status == "COMPLETE",
             )
+            .order_by(Case.outcome_attempts.asc(), Case.id.asc())   # fresh cases first
             .limit(BATCH_LIMIT)
             .all()
         )
@@ -195,6 +236,8 @@ def post_case_outcomes():
         }
 
         for case, job in rows:
+            if time.monotonic() - started > SWEEP_BUDGET_SECONDS:
+                break   # the next tick picks up the rest
             lenders = db.query(LenderResult).filter(LenderResult.job_id == job.id).all()
             body = _build_outcome(case, job, lenders)
 
@@ -214,8 +257,7 @@ def post_case_outcomes():
                 sent += 1
             except Exception as exc:
                 case.last_error = str(exc)[:500]
-                if case.outcome_attempts >= MAX_ATTEMPTS:
-                    case.status = "OUTCOME_FAILED"
+                case.status = "OUTCOME_FAILED" if case.outcome_attempts >= MAX_ATTEMPTS else "QUEUED"
                 failed += 1
 
             db.commit()
@@ -223,3 +265,4 @@ def post_case_outcomes():
         return {"sent": sent, "failed": failed, "considered": len(rows)}
     finally:
         db.close()
+        _release_sweep_lock(lock)
