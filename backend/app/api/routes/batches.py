@@ -125,11 +125,14 @@ def get_batch_jobs(batch_id: int, skip: int = 0, limit: int = 500,
     """Job rows for the batch detail table. Paginated, and loads ONLY the columns
     _serialise_job actually returns.
 
-    `select(Job)` used to pull every column, including the normalised_data JSONB
-    blob (the whole credit report, ~50-100 KB a job) that this response never
-    shows. On a large batch the dashboard's 5-second poll materialised the entire
-    batch's reports in the API process each time and OOM-killed it (2 Gi limit,
-    16 Sep 2026). Same fix already applied to /progress and the tracker export."""
+    Un-paginated `select(Job)` with both relationships eager-loaded OOM-killed
+    the API (2 Gi limit, 16 Sep 2026). On the 32k Barings batch one call built
+    ~323,000 ORM objects — 32,897 jobs, 32,897 clients and 257,315
+    lender_results — and the lender_results alone carried 96 MB of risk_flags
+    and 74 MB of evidence_summary that this response never returns. The batch
+    page polls every 5s, so simply having it open killed the instance.
+    (normalised_data is NOT the culprit here: deliver.py has nulled it since
+    cc9fe8b. load_only still excludes it for batches processed before that.)"""
     _get_batch_for(p, batch_id, db)
     limit = max(1, min(limit, 2000))
     jobs = db.execute(
