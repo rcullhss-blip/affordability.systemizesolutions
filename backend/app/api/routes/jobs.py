@@ -4,13 +4,13 @@ import zipfile
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import Session, selectinload, load_only
 from sqlalchemy import select, text
 from app.core.database import get_db
 from app.core.storage import get_download_url, download_bytes
 from app.core.config import settings
 from app.core.lender_blocklist import is_blocked
-from app.models.tables import Job
+from app.models.tables import Job, Client
 from app.core.auth import Principal, require_auth, require_admin
 
 
@@ -30,10 +30,15 @@ class FeedbackIn(BaseModel):
 @router.get("/spot-checks", dependencies=[Depends(require_admin)])
 def get_spot_checks(db: Session = Depends(get_db)):
     """Return all jobs flagged for spot check that haven't been reviewed yet."""
+    # Load only the columns the response below uses — never the normalised_data
+    # JSONB blob (the whole credit report), which this queue spans every batch.
     jobs = db.execute(
         select(Job)
         .where(Job.spot_check_required == True, Job.spot_check_reviewed == False)
-        .options(selectinload(Job.client))
+        .options(
+            load_only(Job.id, Job.batch_id, Job.client_id, Job.traffic_light, Job.completed_at),
+            selectinload(Job.client).load_only(Client.id, Client.name, Client.matter_ref),
+        )
         .order_by(Job.completed_at.desc())
     ).scalars().all()
     return [

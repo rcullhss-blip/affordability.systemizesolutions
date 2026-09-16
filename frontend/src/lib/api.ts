@@ -83,8 +83,10 @@ export function getLocsZipUrl(jobId: number): string {
   return withToken(`${BASE}/api/v1/jobs/${jobId}/download/locs/zip`);
 }
 
-export async function getBatchJobs(id: number) {
-  const { data } = await api.get(`/api/v1/batches/${id}/jobs`);
+// Paginated — the backend caps this (the un-paged version pulled every job row
+// in the batch on a 5s poll and OOM-killed the API).
+export async function getBatchJobs(id: number, skip = 0, limit = 500) {
+  const { data } = await api.get(`/api/v1/batches/${id}/jobs`, { params: { skip, limit } });
   return data;
 }
 

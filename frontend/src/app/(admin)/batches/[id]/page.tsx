@@ -18,28 +18,47 @@ const STATUS_COLORS: Record<string, string> = {
   DELIVERING: "text-purple-400 bg-purple-900/20",
 };
 
+const PAGE_SIZE = 500;
+
 export default function BatchDetailPage() {
   const { id } = useParams();
   const [progress, setProgress] = useState<any>(null);
   const [batch, setBatch] = useState<any>(null);
   const [jobs, setJobs] = useState<any[]>([]);
+  const [page, setPage] = useState(0);
 
-  const load = () => {
+  // Headline counters are cheap (COUNT ... GROUP BY) — poll them every 5s.
+  useEffect(() => {
     if (!id) return;
     const n = Number(id);
-    getBatchProgress(n).then(setProgress).catch(() => {});
-    getBatch(n).then(setBatch).catch(() => {});
-    getBatchJobs(n).then(setJobs).catch(() => {});
-  };
-
-  useEffect(() => {
-    load();
-    const iv = setInterval(load, 5000);
+    const loadSummary = () => {
+      getBatchProgress(n).then(setProgress).catch(() => {});
+      getBatch(n).then(setBatch).catch(() => {});
+    };
+    loadSummary();
+    const iv = setInterval(loadSummary, 5000);
     return () => clearInterval(iv);
   }, [id]);
 
   const pct = progress?.percent_done ?? 0;
   const isComplete = pct >= 100;
+
+  // The job table is one page of rows, and it is expensive — refresh it every
+  // 30s while the batch is still running, and stop once it has finished.
+  useEffect(() => {
+    if (!id) return;
+    const n = Number(id);
+    const loadJobs = () => {
+      getBatchJobs(n, page * PAGE_SIZE, PAGE_SIZE).then(setJobs).catch(() => {});
+    };
+    loadJobs();
+    if (isComplete) return;
+    const iv = setInterval(loadJobs, 30000);
+    return () => clearInterval(iv);
+  }, [id, page, isComplete]);
+
+  const total = progress?.total ?? jobs.length;
+  const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
   return (
     <div className="p-8">
@@ -130,7 +149,10 @@ export default function BatchDetailPage() {
       <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
         <div className="px-5 py-4 border-b border-gray-800">
           <h3 className="text-base font-semibold text-white">Individual Jobs</h3>
-          <p className="text-xs text-gray-500 mt-0.5">{jobs.length} report(s) in this batch</p>
+          <p className="text-xs text-gray-500 mt-0.5">
+            {total} report(s) in this batch
+            {pageCount > 1 && ` — showing ${page * PAGE_SIZE + 1}-${page * PAGE_SIZE + jobs.length}`}
+          </p>
         </div>
         {jobs.length === 0 ? (
           <div className="p-6 text-gray-500 text-sm">No jobs yet.</div>
@@ -204,6 +226,27 @@ export default function BatchDetailPage() {
                 })}
               </tbody>
             </table>
+          </div>
+        )}
+        {pageCount > 1 && (
+          <div className="flex items-center justify-between px-5 py-3 border-t border-gray-800">
+            <button
+              onClick={() => setPage((p) => Math.max(0, p - 1))}
+              disabled={page === 0}
+              className="text-xs text-blue-400 hover:text-blue-300 disabled:text-gray-600 disabled:cursor-not-allowed font-medium transition-colors"
+            >
+              ← Previous
+            </button>
+            <span className="text-xs text-gray-500">
+              Page {page + 1} of {pageCount}
+            </span>
+            <button
+              onClick={() => setPage((p) => Math.min(pageCount - 1, p + 1))}
+              disabled={page >= pageCount - 1}
+              className="text-xs text-blue-400 hover:text-blue-300 disabled:text-gray-600 disabled:cursor-not-allowed font-medium transition-colors"
+            >
+              Next →
+            </button>
           </div>
         )}
       </div>

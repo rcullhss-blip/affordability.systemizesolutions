@@ -4,7 +4,7 @@ import re
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import Session, selectinload, load_only
 from sqlalchemy import select, func
 from app.core.database import get_db
 from app.core.config import settings
@@ -120,13 +120,37 @@ def get_batch(batch_id: int, db: Session = Depends(get_db), p: Principal = Depen
 
 
 @router.get("/{batch_id}/jobs")
-def get_batch_jobs(batch_id: int, db: Session = Depends(get_db), p: Principal = Depends(require_auth)):
+def get_batch_jobs(batch_id: int, skip: int = 0, limit: int = 500,
+                   db: Session = Depends(get_db), p: Principal = Depends(require_auth)):
+    """Job rows for the batch detail table. Paginated, and loads ONLY the columns
+    _serialise_job actually returns.
+
+    `select(Job)` used to pull every column, including the normalised_data JSONB
+    blob (the whole credit report, ~50-100 KB a job) that this response never
+    shows. On a large batch the dashboard's 5-second poll materialised the entire
+    batch's reports in the API process each time and OOM-killed it (2 Gi limit,
+    16 Sep 2026). Same fix already applied to /progress and the tracker export."""
     _get_batch_for(p, batch_id, db)
+    limit = max(1, min(limit, 2000))
     jobs = db.execute(
         select(Job)
         .where(Job.batch_id == batch_id)
-        .options(selectinload(Job.client), selectinload(Job.lender_results))
+        .options(
+            load_only(
+                Job.id, Job.batch_id, Job.client_id, Job.status, Job.traffic_light,
+                Job.error_message, Job.created_at, Job.completed_at, Job.s3_assessment_key,
+            ),
+            selectinload(Job.client).load_only(
+                Client.id, Client.name, Client.matter_ref, Client.dob,
+            ),
+            selectinload(Job.lender_results).load_only(
+                LenderResult.id, LenderResult.job_id, LenderResult.lender_name,
+                LenderResult.traffic_light, LenderResult.claim_score,
+                LenderResult.loc_generated, LenderResult.s3_loc_key,
+            ),
+        )
         .order_by(Job.created_at.asc())
+        .offset(skip).limit(limit)
     ).scalars().all()
     return [_serialise_job(j) for j in jobs]
 
