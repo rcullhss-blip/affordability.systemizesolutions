@@ -33,6 +33,8 @@ class Settings(BaseSettings):
     # Read-only ops status endpoint (/api/v1/status): counts only, no client data,
     # so an external monitor can hold this key without holding a partner key.
     MONITOR_API_KEY: str = ""
+    # Slack incoming webhook for platform alerts (app.workers.alerting). Unset = no alerts.
+    SLACK_ALERT_WEBHOOK: str = ""
     RENDER_WORKER_SERVICE_ID: str = ""       # defaults to Render's own RENDER_SERVICE_ID
     WORKER_AUTOSCALE: bool = False           # set "1" on the worker service to enable
     WORKER_AUTOSCALE_MAX: int = 6            # Postgres (100 conns) makes 8 the hard ceiling

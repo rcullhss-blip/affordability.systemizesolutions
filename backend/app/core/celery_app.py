@@ -18,6 +18,7 @@ celery_app = Celery(
         "app.workers.retention",
         "app.workers.irl_outcome",
         "app.workers.autoscale",
+        "app.workers.alerting",
     ],
 )
 
@@ -42,6 +43,7 @@ celery_app.conf.update(
         "app.workers.retention.*": {"queue": "watchdog"},
         "app.workers.irl_outcome.*": {"queue": "deliver"},
         "app.workers.autoscale.*": {"queue": "watchdog"},
+        "app.workers.alerting.*": {"queue": "watchdog"},
     },
     beat_schedule={
         "autoscale-every-2-minutes": {
@@ -59,6 +61,11 @@ celery_app.conf.update(
             # interval form never elapsed and nothing was ever purged (found 16 Sep 2026,
             # with 10 Aug batches still in the DB).
             "schedule": crontab(hour=3, minute=0),
+        },
+        # Platform alerts to Slack; quiet unless something is wrong (see app.workers.alerting).
+        "alert-check-every-15-minutes": {
+            "task": "app.workers.alerting.check_and_alert",
+            "schedule": 900.0,
         },
         "post-case-outcomes-every-minute": {
             "task": "app.workers.irl_outcome.post_case_outcomes",
