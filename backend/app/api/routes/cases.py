@@ -5,7 +5,10 @@ Powers the admin "Cases" tab (mirrors Batches): list, detail, and a summary
 count. Case status is the intake/postback state; `job_status` is the live
 assessment-pipeline state of the linked Job.
 """
-from fastapi import APIRouter, Depends, HTTPException
+from datetime import datetime, time, timedelta, timezone
+from typing import Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -17,6 +20,26 @@ from app.api.routes.webhook import _require_irl_key
 from app.workers.fetch import fetch_and_process
 
 router = APIRouter()
+
+
+def _uk_day_bounds(day: Optional[str]):
+    """`day` (YYYY-MM-DD, a UK calendar day) -> naive-UTC [start, end) bounds for
+    Case.created_at (stored as naive UTC). None when no day filter is requested."""
+    if not day:
+        return None
+    try:
+        d = datetime.strptime(day, "%Y-%m-%d").date()
+    except ValueError:
+        raise HTTPException(status_code=422, detail="day must be YYYY-MM-DD")
+    try:
+        from zoneinfo import ZoneInfo
+        tz = ZoneInfo("Europe/London")
+    except Exception:   # no tz database on the host — fall back to UTC days
+        tz = timezone.utc
+    start = datetime.combine(d, time.min, tzinfo=tz)
+    end = datetime.combine(d + timedelta(days=1), time.min, tzinfo=tz)
+    to_utc = lambda t: t.astimezone(timezone.utc).replace(tzinfo=None)
+    return to_utc(start), to_utc(end)
 
 
 def _signed(bucket: str, key: str | None) -> str:
@@ -85,14 +108,24 @@ def _serialise_case(case: Case, job) -> dict:
 
 
 @router.get("/")
-def list_cases(skip: int = 0, limit: int = 50, db: Session = Depends(get_db)):
-    rows = (
+def list_cases(
+    skip: int = 0,
+    limit: int = 50,
+    day: Optional[str] = Query(default=None, description="UK calendar day, YYYY-MM-DD"),
+    db: Session = Depends(get_db),
+):
+    q = (
         db.query(Case, Job)
         .outerjoin(Job, Case.job_id == Job.id)
         # Cases that belong to a tagged bulk run (e.g. Woodville) appear as a single
         # batch on the Batches tab, not scattered here.
         .filter(Case.partner_batch_id.is_(None))
-        .order_by(Case.created_at.desc())
+    )
+    bounds = _uk_day_bounds(day)
+    if bounds:
+        q = q.filter(Case.created_at >= bounds[0], Case.created_at < bounds[1])
+    rows = (
+        q.order_by(Case.created_at.desc())
         .offset(skip)
         .limit(limit)
         .all()
@@ -101,12 +134,26 @@ def list_cases(skip: int = 0, limit: int = 50, db: Session = Depends(get_db)):
 
 
 @router.get("/stats/summary")
-def cases_summary(db: Session = Depends(get_db)):
+def cases_summary(
+    day: Optional[str] = Query(default=None, description="UK calendar day, YYYY-MM-DD"),
+    db: Session = Depends(get_db),
+):
     # Single (non-batch) cases only — bulk-run cases are summarised on the Batches tab.
     _single = Case.partner_batch_id.is_(None)
+    bounds = _uk_day_bounds(day)
+    if bounds:
+        # Every count below filters on _single, so narrowing it narrows them all.
+        _single = Case.partner_batch_id.is_(None) & (Case.created_at >= bounds[0]) & (Case.created_at < bounds[1])
     total = db.query(func.count(Case.id)).filter(_single).scalar() or 0
     sent = db.query(func.count(Case.id)).filter(_single, Case.outcome_sent.is_(True)).scalar() or 0
-    failed = db.query(func.count(Case.id)).filter(_single, Case.status == "OUTCOME_FAILED").scalar() or 0
+    # Undelivered only. A case can hold status OUTCOME_FAILED yet have outcome_sent
+    # set (15 Sep 2026: overlapping sweeps — one delivered, a stale one then wrote
+    # the failed status), and counting those over-reported failures on the dashboard.
+    failed = (
+        db.query(func.count(Case.id))
+        .filter(_single, Case.status == "OUTCOME_FAILED", Case.outcome_sent.is_(False))
+        .scalar() or 0
+    )
     # LOCs delivered to the PCP system: generated LOCs on cases whose outcome was sent.
     locs_sent = (
         db.query(func.count(LenderResult.id))
@@ -122,6 +169,51 @@ def cases_summary(db: Session = Depends(get_db)):
         "failed": failed,
         "in_progress": max(total - sent - failed, 0),
     }
+
+
+class RearmOutcomes(BaseModel):
+    lead_references: list[str]
+
+
+@router.post("/rearm-outcomes", dependencies=[Depends(_require_irl_key)])
+def rearm_outcomes(body: RearmOutcomes, db: Session = Depends(get_db)):
+    """Re-post the STORED outcome for specific cases — no pipeline work.
+
+    Clears the delivery bookkeeping so the next irl_outcome sweep posts the same
+    result again: same traffic light, same lender rows, same documents (their URLs
+    are re-signed at send time, so they stay valid for old cases). Use when the
+    partner loses outcomes their side; their handler de-dupes a re-post.
+
+    Unlike /reprocess-as-firm this re-assesses nothing and generates no new
+    documents. Cases whose job has not COMPLETED are left alone — they will
+    deliver on their own when it does.
+    """
+    refs = list(dict.fromkeys(r for r in (body.lead_references or []) if r))
+    if not refs:
+        raise HTTPException(status_code=422, detail="lead_references must be a non-empty list")
+
+    rearmed = 0
+    results = []
+    for ref in refs:
+        case = db.query(Case).filter(Case.lead_reference == ref).first()
+        if not case:
+            results.append({"lead_reference": ref, "status": "not_found"})
+            continue
+        job = db.get(Job, case.job_id) if case.job_id else None
+        if not job or job.status != "COMPLETE":
+            results.append({"lead_reference": ref, "status": "not_complete"})
+            continue
+        case.outcome_sent = False
+        case.outcome_sent_at = None
+        case.outcome_attempts = 0
+        case.status = "QUEUED"
+        case.last_error = None
+        rearmed += 1
+        results.append({"lead_reference": ref, "status": "rearmed"})
+
+    db.commit()
+    # The beat sweep (every 60s, BATCH_LIMIT 500) picks these up on its next tick.
+    return {"rearmed": rearmed, "requested": len(refs), "results": results}
 
 
 class ReprocessCasesAsFirm(BaseModel):

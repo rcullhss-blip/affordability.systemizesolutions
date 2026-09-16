@@ -43,26 +43,67 @@ function Stat({ label, value, tone }: { label: string; value: number; tone?: str
   );
 }
 
+// Today's date in UK time as YYYY-MM-DD (en-CA formats dates that way).
+function ukToday() {
+  return new Intl.DateTimeFormat("en-CA", { timeZone: "Europe/London" }).format(new Date());
+}
+
+// A single day can hold hundreds of cases; the unfiltered view keeps the latest 50.
+const DAY_LIMIT = 2000;
+const ALL_LIMIT = 50;
+
 export default function CasesPage() {
   const [cases, setCases] = useState<any[]>([]);
   const [summary, setSummary] = useState<any>({ total: 0, in_progress: 0, outcome_sent: 0, locs_sent: 0, failed: 0 });
   const [loading, setLoading] = useState(true);
-
-  const load = () =>
-    Promise.all([getCases().then(setCases).catch(() => {}), getCasesSummary().then(setSummary).catch(() => {})])
-      .finally(() => setLoading(false));
+  const [day, setDay] = useState(""); // "" = all days
 
   useEffect(() => {
+    let cancelled = false;
+    const load = () =>
+      Promise.all([
+        getCases(0, day ? DAY_LIMIT : ALL_LIMIT, day || undefined).then((d) => !cancelled && setCases(d)).catch(() => {}),
+        getCasesSummary(day || undefined).then((d) => !cancelled && setSummary(d)).catch(() => {}),
+      ]).finally(() => !cancelled && setLoading(false));
+
+    setLoading(true);
     load();
     const iv = setInterval(load, 8000);
-    return () => clearInterval(iv);
-  }, []);
+    return () => {
+      cancelled = true;
+      clearInterval(iv);
+    };
+  }, [day]);
+
+  const today = ukToday();
+  const dayLabel = day ? new Date(`${day}T12:00:00`).toLocaleDateString("en-GB") : "";
+  const btn = (active: boolean) =>
+    `rounded-lg border px-3 py-2 text-sm ${
+      active ? "bg-blue-600/20 border-blue-600 text-blue-300" : "bg-gray-950 border-gray-700 text-gray-300 hover:border-gray-500"
+    }`;
 
   return (
     <div className="p-8">
-      <div className="mb-6">
-        <h2 className="text-2xl font-bold text-white">Cases</h2>
-        <p className="text-gray-500 text-sm mt-1">IRL cases from the PCP platform — auto-refreshes every 8s</p>
+      <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
+        <div>
+          <h2 className="text-2xl font-bold text-white">Cases</h2>
+          <p className="text-gray-500 text-sm mt-1">
+            IRL cases from the PCP platform — auto-refreshes every 8s
+            {day && <> · showing {dayLabel}</>}
+          </p>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <button type="button" onClick={() => setDay("")} className={btn(!day)}>All</button>
+          <button type="button" onClick={() => setDay(today)} className={btn(day === today)}>Today</button>
+          <input
+            type="date"
+            value={day}
+            max={today}
+            onChange={(e) => setDay(e.target.value)}
+            aria-label="Filter cases by day"
+            className="rounded-lg bg-gray-950 border border-gray-700 px-3 py-2 text-sm text-gray-300 [color-scheme:dark]"
+          />
+        </div>
       </div>
 
       <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mb-6">
@@ -77,7 +118,7 @@ export default function CasesPage() {
         {loading ? (
           <div className="p-8 text-center text-gray-500 text-sm">Loading...</div>
         ) : cases.length === 0 ? (
-          <div className="p-8 text-center text-gray-500 text-sm">No cases yet.</div>
+          <div className="p-8 text-center text-gray-500 text-sm">{day ? `No cases on ${dayLabel}.` : "No cases yet."}</div>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
@@ -90,12 +131,14 @@ export default function CasesPage() {
                   <th className="px-5 py-3">Assessment</th>
                   <th className="px-5 py-3">Result</th>
                   <th className="px-5 py-3">Outcome → PCP</th>
-                  <th className="px-5 py-3">Date</th>
+                  <th className="px-5 py-3">{day ? "Time" : "Date"}</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-800/60">
                 {cases.map((c) => {
                   const signals = c.triage?.fired_signals?.length ?? 0;
+                  // created_at is naive UTC from the API; mark it UTC so it displays in local time.
+                  const created = c.created_at ? new Date(/[zZ]|[+-]\d\d:\d\d$/.test(c.created_at) ? c.created_at : `${c.created_at}Z`) : null;
                   return (
                     <tr key={c.id} className="hover:bg-gray-800/30 transition-colors">
                       <td className="px-5 py-3">
@@ -121,7 +164,11 @@ export default function CasesPage() {
                       </td>
                       <td className="px-5 py-3"><OutcomeBadge sent={c.outcome_sent} status={c.status} /></td>
                       <td className="px-5 py-3 text-gray-500 text-xs">
-                        {c.created_at ? new Date(c.created_at).toLocaleDateString("en-GB") : "—"}
+                        {created
+                          ? day
+                            ? created.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", timeZone: "Europe/London" })
+                            : created.toLocaleDateString("en-GB", { timeZone: "Europe/London" })
+                          : "—"}
                       </td>
                     </tr>
                   );

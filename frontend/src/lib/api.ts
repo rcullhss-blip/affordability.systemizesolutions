@@ -90,8 +90,9 @@ export async function getBatchJobs(id: number) {
 
 // ── Cases (IRL cases from the PCP platform) ─────────────────────────────────
 
-export async function getCases(skip = 0, limit = 50) {
-  const { data } = await api.get("/api/v1/cases/", { params: { skip, limit } });
+// `day` (YYYY-MM-DD, UK calendar day) filters to cases received that day.
+export async function getCases(skip = 0, limit = 50, day?: string) {
+  const { data } = await api.get("/api/v1/cases/", { params: { skip, limit, ...(day ? { day } : {}) } });
   return data;
 }
 
@@ -100,8 +101,8 @@ export async function getCase(id: number) {
   return data;
 }
 
-export async function getCasesSummary() {
-  const { data } = await api.get("/api/v1/cases/stats/summary");
+export async function getCasesSummary(day?: string) {
+  const { data } = await api.get("/api/v1/cases/stats/summary", { params: day ? { day } : {} });
   return data;
 }
 
