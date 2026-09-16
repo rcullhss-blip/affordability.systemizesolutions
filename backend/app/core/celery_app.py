@@ -1,4 +1,5 @@
 from celery import Celery
+from celery.schedules import crontab
 from app.core.config import settings
 
 celery_app = Celery(
@@ -53,7 +54,11 @@ celery_app.conf.update(
         },
         "retention-purge-daily": {
             "task": "app.workers.retention.purge_old_batches",
-            "schedule": 86400.0,  # once a day
+            # Fixed time of day, NOT an 86400s interval: beat's interval timer restarts
+            # with the service, and this project deploys more often than daily, so the
+            # interval form never elapsed and nothing was ever purged (found 16 Sep 2026,
+            # with 10 Aug batches still in the DB).
+            "schedule": crontab(hour=3, minute=0),
         },
         "post-case-outcomes-every-minute": {
             "task": "app.workers.irl_outcome.post_case_outcomes",
