@@ -103,7 +103,10 @@ FIRM_CONFIGS = {
         "signoff": ["TR Sols", "[TR SOLS ADDRESS — TO BE CONFIRMED]"],
     },
     # JF Law (London) Ltd — 6th sols brand and the first IRL CRM firm. Logo
-    # supplied 14 Sep 2026 (1536x516 wordmark, ~3:1). Address + SRA number
+    # supplied 14 Sep 2026 (1536x516 RGBA wordmark, ~3:1, 319 KB); re-encoded
+    # 21 Sep 2026 to 720x242 flattened-on-white 128-colour PNG (~17 KB) after PCP
+    # dev reported the embedded image was 72% of their CRM storage (361 KB/letter
+    # → ~60 KB). Keep any replacement under ~30 KB. Address + SRA number
     # confirmed by JF Law 14 Sep 2026; company number and registered office
     # from Companies House (14661683). TODO(jf_law): add "client_account" bank
     # details (see ryans) once JF Law supply them — LOC para 6 is empty until then.
@@ -111,7 +114,7 @@ FIRM_CONFIGS = {
         "name":    "JF Law",
         "address": "45 Fitzroy Street, London, W1T 6EB",
         "logo":    os.path.join(_DOC_DIR, "jf-law-logo.png"),
-        "logo_w":  4.6,  # cm — wide horizontal wordmark (1536x516, ~3:1) → ~1.5 cm tall
+        "logo_w":  4.6,  # cm — wide horizontal wordmark (720x242, ~3:1) → ~1.5 cm tall
         "footer1": ("Please ensure that all correspondence is sent to our London Office: "
                     "45 Fitzroy Street, London, W1T 6EB."),
         "footer2": ("JF Law (London) Ltd is authorised and regulated by the Solicitors Regulation "
@@ -575,7 +578,26 @@ def _active_risk_sections(flags: list, cal: dict, opened_date_str: str) -> list:
 
 # ── Document formatting helpers ───────────────────────────────────────────
 
+def _strip_template_bloat(doc):
+    """Drop dead weight inherited from python-docx's default template.
+
+    Every generated letter carried ``word/stylesWithEffects.xml`` (a Word 2010
+    duplicate of styles.xml, ~440 KB raw / ~14 KB zipped, referenced by nothing
+    we write) and ``docProps/thumbnail.jpeg`` (a stock preview of the blank
+    template). PCP dev store each LOC byte-for-byte in the IRL CRM, so this is
+    ~15 KB off every letter for free. Word and LibreOffice regenerate both.
+    """
+    for rId, rel in list(doc.part.rels.items()):
+        if rel.reltype.endswith("/stylesWithEffects"):
+            doc.part.drop_rel(rId)
+    pkg_rels = doc.part.package.rels
+    for rId, rel in list(pkg_rels.items()):
+        if rel.reltype.endswith("/thumbnail"):
+            del pkg_rels[rId]
+
+
 def _set_doc_defaults(doc):
+    _strip_template_bloat(doc)
     style = doc.styles["Normal"]
     style.font.name = "Arial"
     style.font.size = Pt(11)
