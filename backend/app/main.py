@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 from fastapi import Depends
-from app.api.routes import batches, jobs, clients, analytics, upload, files, webhook, cases, auth, status
+from app.api.routes import batches, jobs, clients, analytics, upload, files, webhook, cases, auth, status, brain
 from app.core.auth import require_auth, require_admin, seed_admin_from_env
 from app.core.config import settings
 
@@ -41,6 +41,7 @@ app.include_router(cases.router,   prefix="/api/v1/cases",   tags=["cases"],   d
 # Ops status: counts only, its own MONITOR_API_KEY (no user/partner auth) so an
 # external monitor never needs a key that can read client data.
 app.include_router(status.router,   prefix="/api/v1/status",  tags=["status"])
+app.include_router(brain.router,    prefix="/api/v1/brain",   tags=["brain"])
 
 
 @app.on_event("startup")

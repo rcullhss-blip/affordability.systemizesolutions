@@ -33,6 +33,9 @@ class Settings(BaseSettings):
     # Read-only ops status endpoint (/api/v1/status): counts only, no client data,
     # so an external monitor can hold this key without holding a partner key.
     MONITOR_API_KEY: str = ""
+    # Read-only assessment feed (/api/v1/brain): engine results per case/lender,
+    # no client identity data. Held by the IRL brain dev. Unset = route closed.
+    BRAIN_API_KEY: str = ""
     # Slack incoming webhook for platform alerts (app.workers.alerting). Unset = no alerts.
     SLACK_ALERT_WEBHOOK: str = ""
     RENDER_WORKER_SERVICE_ID: str = ""       # defaults to Render's own RENDER_SERVICE_ID
