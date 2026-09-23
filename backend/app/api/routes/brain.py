@@ -78,11 +78,37 @@ def _lender_accounts(schema: dict, lender_name: str) -> list[dict]:
             "utilisation_pct": a.get("utilisation_pct"),
             "monthly_payment": a.get("monthly_payment"),
             "payment_history": a.get("payment_history") or [],
+            "payment_codes_raw": a.get("payment_codes_raw"),   # positional, month 0 = last_updated
             "last_updated":    a.get("last_updated"),
         }
         for a in (schema.get("accounts") or [])
         if a.get("lender") == lender_name
     ]
+
+
+def _searches(schema: dict) -> list[dict]:
+    return [
+        {"date": s.get("date"), "lender": s.get("lender"), "search_type": s.get("search_type"),
+         "search_subtype": s.get("search_subtype"), "application_type": s.get("application_type")}
+        for s in (schema.get("searches") or []) if isinstance(s, dict)
+    ]
+
+
+def _defaults(schema: dict) -> list[dict]:
+    """Defaults, CCJs and insolvencies exactly as the rules read them (status says which)."""
+    return [
+        {"lender": d.get("lender"), "status": d.get("status"), "date": d.get("date"),
+         "amount": d.get("amount"), "record_type": d.get("record_type") or d.get("type")}
+        for d in (schema.get("defaults") or []) if isinstance(d, dict)
+    ]
+
+
+def _data_status(schema: dict) -> str:
+    """available: slim credit data present; unavailable: raw report could not be
+    re-read; pending_backfill: purged before it was kept, refill still queued."""
+    if schema.get("_backfill_error"):
+        return "unavailable"
+    return "available" if schema.get("accounts") is not None else "pending_backfill"
 
 
 def _at_lending(schema: dict, lender_name: str) -> Optional[dict]:
@@ -150,8 +176,11 @@ def lender_results(
                 "at_lending":         _at_lending(schema, lr.lender_name),
                 "accounts":           _lender_accounts(schema, lr.lender_name),
             })
-        findings = audit_report(schema, [{"traffic_light": lr.traffic_light,
-                                          "lender_name": lr.lender_name} for lr in lrs])
+        data_status = _data_status(schema)
+        # Only audit real data — auditing a purged report reports a false PARSE_EMPTY.
+        findings = (audit_report(schema, [{"traffic_light": lr.traffic_light,
+                                           "lender_name": lr.lender_name} for lr in lrs])
+                    if data_status == "available" else None)
         cases.append({
             "case_id":             job.id,
             "client_reference":    lead_ref,                 # tracker "Client Reference" (blank for older batch uploads)
@@ -162,6 +191,7 @@ def lender_results(
             "assessed_at":         _iso(job.completed_at),
             "updated_at":          _iso(job.updated_at),
             "traffic_light":       job.traffic_light,
+            "data_status":         data_status,
             "data_source":         schema.get("_source"),
             "data_present":        _data_present(schema),
             "qa": {
@@ -169,6 +199,8 @@ def lender_results(
                 "spot_check_required": job.spot_check_required,
                 "spot_check_reviewed": job.spot_check_reviewed,
             },
+            "searches":            _searches(schema),
+            "defaults":            _defaults(schema),
             "lenders":             lenders,
         })
 

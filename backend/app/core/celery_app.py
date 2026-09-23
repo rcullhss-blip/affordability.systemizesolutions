@@ -19,6 +19,7 @@ celery_app = Celery(
         "app.workers.irl_outcome",
         "app.workers.autoscale",
         "app.workers.alerting",
+        "app.workers.brain_backfill",
     ],
 )
 
@@ -44,6 +45,7 @@ celery_app.conf.update(
         "app.workers.irl_outcome.*": {"queue": "deliver"},
         "app.workers.autoscale.*": {"queue": "watchdog"},
         "app.workers.alerting.*": {"queue": "watchdog"},
+        "app.workers.brain_backfill.*": {"queue": "watchdog"},
     },
     beat_schedule={
         "autoscale-every-2-minutes": {
@@ -66,6 +68,12 @@ celery_app.conf.update(
         "alert-check-every-15-minutes": {
             "task": "app.workers.alerting.check_and_alert",
             "schedule": 900.0,
+        },
+        # Refill slim credit data on jobs delivered before it was kept (brain feed).
+        # Small batches; a no-op once everything is filled.
+        "brain-backfill-every-2-minutes": {
+            "task": "app.workers.brain_backfill.backfill_slim_data",
+            "schedule": 120.0,
         },
         "post-case-outcomes-every-minute": {
             "task": "app.workers.irl_outcome.post_case_outcomes",

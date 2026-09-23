@@ -515,6 +515,7 @@ def _normalise_experian_report(data: dict) -> dict:
             "utilisation_pct": None, "status": status, "default_date": default_date,
             "default_balance": (balance if is_default else None), "monthly_payment": monthly,
             "payment_history": payment_hist, "last_updated": last_up,
+            "payment_codes_raw": codes,  # unfiltered, index 0 = last_updated month
         })
         if is_default:
             defaults.append({"lender": lender, "status": "DEFAULT",
@@ -693,6 +694,9 @@ def _normalise_experian_bosh(data: dict) -> dict:
             "default_date": default_date, "default_balance": (bal if is_default else None),
             "monthly_payment": _expb_monthly(raw.get("mnthlyRepayment")),
             "payment_history": payment_hist,
+            # Unfiltered CAIS codes, one per month, index 0 = last_updated month
+            # (payment_history drops non-adverse codes, so its positions shift).
+            "payment_codes_raw": codes, "last_updated": last_up,
         })
         if is_default:
             defaults.append({"lender": lender, "status": "DEFAULT",

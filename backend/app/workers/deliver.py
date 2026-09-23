@@ -7,6 +7,7 @@ from app.analysis.checkpoint_audit import (
     audit_report, is_checkpoint, needs_spot_check, format_checkpoint,
 )
 from app.workers.batch_stats import bump_batch_stats, recompute_batch_stats
+from app.analysis.brain_snapshot import slim_schema
 from sqlalchemy import select, update, func
 from datetime import datetime
 
@@ -58,10 +59,10 @@ def deliver_outputs(self, job_id: int):
 
         job.status = "COMPLETE"
         job.completed_at = datetime.utcnow()
-        # Self-clean: the parsed report (jsonb) is intermediate data only needed
-        # up to document generation. Docs are now in S3, so drop it to keep the
-        # jobs table from growing unbounded. Re-runs can re-fetch from s3_raw_key.
-        job.normalised_data = None
+        # Self-clean: the raw report text and client identity are only needed up to
+        # document generation. Docs are now in S3, so keep just the slim credit data
+        # the engine scored on (read by the brain feed); re-runs re-fetch from s3_raw_key.
+        job.normalised_data = slim_schema(job.normalised_data)
 
         # Randomly flag for spot check (on top of any audit-driven flag above)
         if not job.spot_check_required and random.random() < _spot_check_rate(job):

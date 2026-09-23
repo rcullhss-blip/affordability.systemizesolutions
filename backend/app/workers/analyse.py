@@ -23,6 +23,13 @@ _SUBSTANTIVE_FLAGS = {
 }
 
 
+# Only analyse financial credit accounts — skip telecoms, utilities, bank accounts, mortgages
+FINANCIAL_TYPES = {
+    "CREDIT_CARD", "PERSONAL_LOAN", "PAYDAY_LOAN", "HIRE_PURCHASE",
+    "OVERDRAFT", "STORE_CARD", "MAIL_ORDER", "HOME_CREDIT", "OTHER",
+}
+
+
 def _has_real_grounds(flags) -> bool:
     return any(isinstance(f, dict) and f.get("type") in _SUBSTANTIVE_FLAGS
                for f in (flags or []))
@@ -61,11 +68,6 @@ def run_analysis(self, job_id: int):
         searches = schema.get("searches", [])
         defaults = schema.get("defaults", [])
 
-        # Only analyse financial credit accounts — skip telecoms, utilities, bank accounts, mortgages
-        FINANCIAL_TYPES = {
-            "CREDIT_CARD", "PERSONAL_LOAN", "PAYDAY_LOAN", "HIRE_PURCHASE",
-            "OVERDRAFT", "STORE_CARD", "MAIL_ORDER", "HOME_CREDIT", "OTHER",
-        }
         # Telecom companies offering phone finance and debt purchasers are not subject
         # to FCA CONC affordability obligations in the same way as consumer credit lenders
         NON_FINANCIAL_PATTERNS = [
