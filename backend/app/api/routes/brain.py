@@ -20,6 +20,7 @@ from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
 from app.analysis.checkpoint_audit import audit_report
+from app.analysis.computed_at_lending import _parse_date, compute_at_lending
 from app.analysis.rules_engine import _compute_confidence
 from app.core.config import settings
 from app.core.database import get_db
@@ -112,11 +113,18 @@ def _data_status(schema: dict) -> str:
 
 
 def _at_lending(schema: dict, lender_name: str) -> Optional[dict]:
-    """The snapshot analyse.py attached to this lender's accounts (same for each)."""
-    for a in schema.get("accounts") or []:
-        if a.get("lender") == lender_name and a.get("computed_at_lending"):
-            return a["computed_at_lending"]
-    return None
+    """The at-lending snapshot, recomputed from the stored accounts with the same
+    lending-date rule as analyse.py (the lender's first in-scope account), so
+    snapshot fixes apply to every case on read rather than only to new runs."""
+    from app.workers.analyse import FINANCIAL_TYPES  # heavy worker import, as below
+
+    accounts = schema.get("accounts") or []
+    accs = [a for a in accounts if a.get("lender") == lender_name
+            and (a.get("account_type") or "OTHER").upper() in FINANCIAL_TYPES]
+    if not accs:
+        return None
+    return compute_at_lending(_parse_date(accs[0].get("opened_date")), accounts,
+                              schema.get("searches") or [], schema.get("defaults") or [], lender_name)
 
 
 @router.get("/lender-results", dependencies=[Depends(_require_brain_key)])

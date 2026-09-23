@@ -25,8 +25,14 @@ def compute_at_lending(
     ]
 
     total_debt = sum(a.get("balance") or 0 for a in active_accounts)
-    total_limit = sum(a.get("credit_limit") or 0 for a in active_accounts)
-    utilisation = round(total_debt / total_limit * 100, 1) if total_limit > 0 else 0.0
+    # Utilisation only over accounts that carry a limit (cards, catalogues,
+    # overdrafts). Loans/HP have no limit, so their balances must not sit in the
+    # numerator — that inflated the figure to thousands of percent. None when no
+    # account has a limit, rather than a misleading 0.
+    limited = [a for a in active_accounts if (a.get("credit_limit") or 0) > 0]
+    revolving_balance = sum(a.get("balance") or 0 for a in limited)
+    total_limit = sum(a.get("credit_limit") for a in limited)
+    utilisation = round(revolving_balance / total_limit * 100, 1) if total_limit > 0 else None
 
     # Defaults registered before the lending date
     active_defaults = [
@@ -79,6 +85,8 @@ def compute_at_lending(
         "total_debt": round(total_debt, 2),
         "active_account_count": len(active_accounts),
         "utilisation_pct": utilisation,
+        "revolving_balance": round(revolving_balance, 2),
+        "total_credit_limit": round(total_limit, 2),
         "active_defaults_count": len(active_defaults),
         "active_defaults_list": [
             {"lender": d.get("lender", ""), "date": d.get("date", ""), "amount": d.get("amount", 0)}
@@ -178,7 +186,9 @@ def _empty_snapshot() -> dict:
         "lending_date": None,
         "total_debt": 0,
         "active_account_count": 0,
-        "utilisation_pct": 0,
+        "utilisation_pct": None,
+        "revolving_balance": 0,
+        "total_credit_limit": 0,
         "active_defaults_count": 0,
         "active_defaults_list": [],
         "missed_payments_6m_prior": 0,
