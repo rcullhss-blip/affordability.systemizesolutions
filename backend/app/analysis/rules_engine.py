@@ -78,8 +78,9 @@ def analyse_lender(
 
     # Per-lender deduplication flags
     _adverse_fired  = False
-    _searches_fired = False
     _util_fired     = False
+    best_adverse    = None   # (count, opened_date) — strongest across the lender's accounts
+    best_searches   = None
 
     for acc in viable_accounts:
         opened       = _parse_date(acc.get("opened_date"))
@@ -150,46 +151,52 @@ def analyse_lender(
                                       f"across {arrears_months} months — difficulty short of default"
                                   )})
 
-        # --- Active adverse at time of lending (fire once per lender) ---
-        if opened and not _adverse_fired:
-            active_defaults_at_lending = [
-                d for d in full_schema.get("defaults", [])
+        # Rules D and E are assessed on EVERY account's own opened date (second
+        # loans, top-ups), and only the strongest result is scored, below.
+        if opened:
+            n_adverse = sum(
+                1 for d in full_schema.get("defaults", [])
                 if _parse_date(d.get("date")) and _parse_date(d.get("date")) < opened
                 and d.get("status") not in ("CCJ", "INSOLVENCY")  # handled separately
-            ]
-            if active_defaults_at_lending:
-                n = len(active_defaults_at_lending)
-                adverse_score = 55 if n >= 5 else (45 if n >= 2 else 35)
-                score += adverse_score
-                _adverse_fired = True
-                flags.append({"type": "ACTIVE_ADVERSE_AT_LENDING", "severity": "CRITICAL",
-                              "description": (
-                                  f"Credit file recorded {n} adverse "
-                                  f"{'entry' if n == 1 else 'entries'} before {lender_name} "
-                                  f"approved credit on {opened.strftime('%d %b %Y')} — "
-                                  f"indicators of existing financial difficulty"
-                              )})
+            )
+            if n_adverse and (not best_adverse or n_adverse > best_adverse[0]):
+                best_adverse = (n_adverse, opened)
+            n_searches = _application_searches_within_90_days(searches, opened, exclude_lender=lender_name)
+            if n_searches and (not best_searches or n_searches > best_searches[0]):
+                best_searches = (n_searches, opened)
 
-        # --- Credit application searches close to lending (fire once per lender) ---
-        if opened and not _searches_fired:
-            app_searches = _application_searches_within_90_days(searches, opened, exclude_lender=lender_name)
-            if app_searches >= 4:
-                score += 20
-                _searches_fired = True
-                flags.append({"type": "MULTIPLE_HARD_SEARCHES", "severity": "HIGH",
-                              "description": (
-                                  f"{app_searches} confirmed credit application footprints in the "
-                                  f"90 days before {lender_name} approved credit — significant "
-                                  f"credit-seeking behaviour indicative of financial pressure"
-                              )})
-            elif app_searches >= 2:
-                score += 10
-                _searches_fired = True
-                flags.append({"type": "HARD_SEARCHES", "severity": "MEDIUM",
-                              "description": (
-                                  f"{app_searches} credit application searches in the 90 days "
-                                  f"before {lender_name} approved credit"
-                              )})
+    # --- Active adverse at time of lending (strongest lending date, once per lender) ---
+    if best_adverse:
+        n, opened = best_adverse
+        adverse_score = 55 if n >= 5 else (45 if n >= 2 else 35)
+        score += adverse_score
+        _adverse_fired = True
+        flags.append({"type": "ACTIVE_ADVERSE_AT_LENDING", "severity": "CRITICAL",
+                      "description": (
+                          f"Credit file recorded {n} adverse "
+                          f"{'entry' if n == 1 else 'entries'} before {lender_name} "
+                          f"approved credit on {opened.strftime('%d %b %Y')} — "
+                          f"indicators of existing financial difficulty"
+                      )})
+
+    # --- Credit application searches close to lending (strongest lending date, once per lender) ---
+    if best_searches:
+        app_searches, opened = best_searches
+        if app_searches >= 4:
+            score += 20
+            flags.append({"type": "MULTIPLE_HARD_SEARCHES", "severity": "HIGH",
+                          "description": (
+                              f"{app_searches} confirmed credit application footprints in the "
+                              f"90 days before {lender_name} approved credit — significant "
+                              f"credit-seeking behaviour indicative of financial pressure"
+                          )})
+        elif app_searches >= 2:
+            score += 10
+            flags.append({"type": "HARD_SEARCHES", "severity": "MEDIUM",
+                          "description": (
+                              f"{app_searches} credit application searches in the 90 days "
+                              f"before {lender_name} approved credit"
+                          )})
 
     # --- CCJs and public records (global — present on file at time of lending) ---
     all_defs_global = full_schema.get("defaults", [])

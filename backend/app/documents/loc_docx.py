@@ -1298,6 +1298,19 @@ def generate_loc_docx(schema: dict, lender_result, review_warnings: list[str] | 
         ("30.11", "all information utilised from the Office of National Statistics to undertake "
                   "the Creditworthiness Assessment."),
     ]
+    # Credit cards: each limit increase is its own lending decision (CONC 5.2A.4R),
+    # and later increases are where lenders most often concede.
+    is_card = lender_type == "credit_card" or any(
+        (a.get("account_type") or "").upper() in ("CREDIT_CARD", "STORE_CARD")
+        for a in [lender_acc] + [a for a in all_accounts
+                                 if (a.get("lender") or "").lower().strip() == lender.lower().strip()]
+    )
+    if is_card:
+        disclosure[-1] = (disclosure[-1][0], disclosure[-1][1][:-1] + "; and")
+        disclosure.append((
+            "30.12", "details of every decision to increase the credit limit on the account, "
+                     "including the date and amount of each increase, and the creditworthiness "
+                     "and affordability assessment undertaken before each increase (CONC 5.2A.4R)."))
     for num, text in disclosure:
         _numbered_item(doc, num, text)
 
