@@ -1,15 +1,23 @@
 """
 Lender-type classifier and CONC reference selector.
 """
+import re
 
 LENDER_TYPE_MAP: dict[str, str] = {}
 
+# Payday / high-cost short-term brands, including defunct ones (their loans are
+# still on credit files). Matched on whole words (see is_payday_lender), not by
+# substring, so short names like "EE" can't match inside "speedycash". Longer-term
+# high-cost lenders (118118 Money, Loans 2 Go, Everyday Lending/EVLO, Oakam, Salad
+# Money, Koyo, Bamboo) are deliberately not listed: they aren't payday.
 _PAYDAY = [
     "sunny", "quickquid", "wonga", "ferratum", "mr lender", "peachy",
-    "pounds to pocket", "wageday advance", "uncle buck", "drafty", "bamboo",
-    "lending stream", "safetynet credit", "everyday loans", "cash4unow",
-    "myjar", "wizzcash", "cashfloat", "piggybank", "satsuma", "cash converters",
-    "dollar financial", "speedycash", "toothfairy", "juo loans",
+    "pounds to pocket", "wageday advance", "wage day advance", "uncle buck", "drafty",
+    "lending stream", "gain credit", "safetynet credit", "cash4unow",
+    "myjar", "moneyboat", "wizzcash", "cashfloat", "western circle", "piggybank",
+    "satsuma", "cash converters", "dollar financial", "speedycash", "toothfairy",
+    "juo loans", "the money platform", "gracombex", "quid market", "quidmarket",
+    "fernovo", "polar credit", "payday uk", "payday express", "the money shop",
 ]
 _CREDIT_CARD = [
     "aqua", "vanquis", "capital one", "marbles", "fluid", "newday", "barclaycard",
@@ -110,9 +118,23 @@ _register(_TELECOM,       "telecom")
 _register(_PREMIUM_FINANCE, "premium_finance")
 
 
+def _words(name: str) -> str:
+    """Lower-case, punctuation to spaces, padded so ' key ' matches whole words."""
+    return " " + " ".join(re.sub(r"[^a-z0-9&]+", " ", (name or "").lower()).split()) + " "
+
+
+def is_payday_lender(lender_name: str) -> bool:
+    words = _words(lender_name)
+    return any(f" {key} " in words for key in _PAYDAY)
+
+
 def classify_lender(lender_name: str) -> str:
+    if is_payday_lender(lender_name):
+        return "payday"
     name_lower = lender_name.lower().strip()
     for key, ltype in LENDER_TYPE_MAP.items():
+        if ltype == "payday":
+            continue  # whole-word match only, above
         if key in name_lower or name_lower in key:
             return ltype
     return "other"

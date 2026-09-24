@@ -343,8 +343,9 @@ _EXP_CODE_MAP = {
     "04": "CREDIT_CARD", "05": "CREDIT_CARD", "06": "CREDIT_CARD", "07": "OTHER",
     "08": "MAIL_ORDER", "09": "OTHER", "10": "CREDIT_CARD", "15": "MORTGAGE",
     "16": "PERSONAL_LOAN", "17": "PERSONAL_LOAN", "19": "OTHER",
-    "22": "TELECOM", "23": "UTILITY", "26": "PAYDAY_LOAN", "37": "STORE_CARD",
-}
+    "22": "TELECOM", "23": "UTILITY", "26": "PERSONAL_LOAN", "28": "PAYDAY_LOAN",
+    "37": "STORE_CARD",
+}  # CAIS 26 = Consolidated Debt, 28 = Pay Day Loans (was 26 -> payday, 28 missing)
 
 # Lender-name override — same classifier the PDF/Boshhh path uses, so e.g.
 # Moneybarn/MotoNovo/Oodle are typed as car finance regardless of the CAIS code.
@@ -1471,8 +1472,10 @@ def _tu_moda_account(raw: dict) -> Optional[dict]:
     org_type  = raw.get("OrganisationType", "")
     freq      = raw.get("RepaymentFrequency", "")
 
-    # Classify as PAYDAY_LOAN when weekly repayment or known finance org
-    acct_type = "PAYDAY_LOAN" if freq.upper() in ("WEEKLY", "W") else "HIGH_COST_LOAN"
+    # Weekly repayment = payday. Other high-cost accounts are typed as personal
+    # loans so they're still analysed (HIGH_COST_LOAN isn't an analysed type and
+    # was silently dropped); known payday brands are re-typed by name in analyse.py.
+    acct_type = "PAYDAY_LOAN" if freq.upper() in ("WEEKLY", "W") else "PERSONAL_LOAN"
 
     balance      = _coerce_num(raw.get("Balance"))
     credit_limit = _coerce_num(raw.get("Limit"))

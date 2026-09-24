@@ -7,7 +7,7 @@ from app.models.tables import Job, LenderResult, Batch
 from app.models.enums import JobStatus, TrafficLight
 from app.analysis.rules_engine import analyse_lender
 from app.analysis.computed_at_lending import compute_at_lending, _parse_date as parse_date
-from app.analysis.lender_classifier import classify_lender
+from app.analysis.lender_classifier import classify_lender, is_payday_lender, _words
 from app.workers.document import generate_documents
 from sqlalchemy.orm.attributes import flag_modified
 
@@ -35,18 +35,58 @@ def _has_real_grounds(flags) -> bool:
                for f in (flags or []))
 
 
-# Mobile networks whose names are too short to match safely by substring (bare
-# 'EE' is a substring of 'speedycash'/'freemans', etc.). Matched EXACTLY against
-# the cleaned lender name so they're excluded without false-positiving real lenders.
+# Businesses that never made a lending decision: debt purchasers/collectors,
+# mobile/telecom providers and charge cards. Matched as whole words anywhere in
+# the name (so "EE FLEX PAY" and "CABOT CREDIT MANAGEMENT" are caught), not as
+# exact short names or raw substrings.
+NON_FINANCIAL_PATTERNS = [
+    # Debt purchasers / collectors
+    "pra group", "pra capital", "lowell", "cabot", "intrum", "arrow global",
+    "hoist finance", "moorcroft", "link financial", "1st credit", "creditcorp",
+    "indigo michael", "ddc financial solutions", "lantern", "perch",
+    # Telecoms
+    "vodafone", "virgin media mobile", "hutchison 3g", "hutchison3g",
+    "talk talk", "talktalk", "bt group", "flex pay", "flexpay",
+    # Charge cards (pay-in-full, no revolving balance) — out of scope
+    "american express", "amex",
+]
+
+# Mobile network names, matched as whole words anywhere in the name. Bare "3"
+# and "three" are only excluded as the WHOLE name, since they appear in real
+# lender names.
 _MOBILE_NETWORKS = {
-    "ee", "o2", "three", "3", "orange", "t-mobile", "t mobile", "tmobile",
-    "ee mobile", "o2 mobile", "three uk", "h3g", "h3g uk", "hutchison 3g",
+    "ee", "o2", "orange", "t-mobile", "t mobile", "tmobile", "h3g", "three uk",
+    "three mobile", "giffgaff", "tesco mobile", "sky mobile", "id mobile",
+    "lebara", "lycamobile", "lyca mobile", "smarty", "voxi", "virgin mobile",
 }
+_MOBILE_EXACT = {"3", "three"}
 
 
 def _is_mobile_network(name: str) -> bool:
+    words = _words(name)
     core = re.sub(r'\b(ltd|limited|plc|uk|group|the)\b', '', (name or "").lower()).strip().strip('.,& ')
-    return core in _MOBILE_NETWORKS
+    return core in _MOBILE_EXACT or any(f" {n} " in words for n in _MOBILE_NETWORKS)
+
+
+def _is_non_financial(name: str) -> bool:
+    # Mobile/telecom providers are out of scope (never a consumer-credit LOC),
+    # even when the account slips through typed as OTHER.
+    if _is_mobile_network(name) or classify_lender(name) == "telecom":
+        return True
+    words = _words(name)
+    return any(f" {pat} " in words for pat in NON_FINANCIAL_PATTERNS)
+
+
+def _retype(acc: dict) -> str:
+    """Account type as analysed. Known payday brands are PAYDAY_LOAN whatever the
+    bureau code (most report as ordinary loans), on every report source; legacy
+    HIGH_COST_LOAN (TU Moda, non-weekly) is analysed as a personal loan."""
+    t = (acc.get("account_type") or "OTHER").upper()
+    if t == "HIGH_COST_LOAN":
+        t = "PERSONAL_LOAN"
+    if t in FINANCIAL_TYPES and is_payday_lender(acc.get("lender") or ""):
+        t = "PAYDAY_LOAN"
+    return t
 
 
 @celery_app.task(bind=True, max_retries=2, default_retry_delay=15)
@@ -68,31 +108,10 @@ def run_analysis(self, job_id: int):
         searches = schema.get("searches", [])
         defaults = schema.get("defaults", [])
 
-        # Telecom companies offering phone finance and debt purchasers are not subject
-        # to FCA CONC affordability obligations in the same way as consumer credit lenders
-        NON_FINANCIAL_PATTERNS = [
-            "o2", "vodafone", "virgin media mobile", "hutchison 3g", "hutchison3g",
-            "ee limited", "three mobile", "talk talk", "bt group",
-            "pra group", "pra capital", "lowell", "cabot financial",
-            "intrum", "arrow global", "hoist finance", "moorcroft",
-            "link financial", "1st credit", "creditcorp",
-            # Charge cards (pay-in-full, no revolving balance) — out of scope
-            "american express", "amex",
-        ]
-
-        def _is_non_financial(name: str) -> bool:
-            n = name.lower()
-            # Mobile/telecom providers are out of scope (never a consumer-credit LOC),
-            # even when the account slips through typed as OTHER. _is_mobile_network
-            # catches bare short names (EE, O2, Three, Orange) that substring matching
-            # misses or mis-classifies.
-            if _is_mobile_network(name) or classify_lender(name) == "telecom":
-                return True
-            return any(pat in n for pat in NON_FINANCIAL_PATTERNS)
-
         lender_groups: dict[str, list] = {}
         for acc in accounts:
-            if acc.get("account_type", "OTHER").upper() not in FINANCIAL_TYPES:
+            acc["account_type"] = _retype(acc)
+            if acc["account_type"] not in FINANCIAL_TYPES:
                 continue
             lender = acc.get("lender", "Unknown")
             if _is_non_financial(lender):
