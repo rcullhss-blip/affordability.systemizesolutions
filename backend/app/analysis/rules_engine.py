@@ -87,7 +87,7 @@ def analyse_lender(
 
         # --- Payday loan presence ---
         if account_type == "PAYDAY_LOAN":
-            score += 30
+            score += 15
             flags.append({"type": "PAYDAY_LOAN", "severity": "HIGH",
                           "description": f"Payday / high-cost short-term loan identified with {lender_name}"})
 
@@ -96,7 +96,7 @@ def analyse_lender(
             util = acc.get("utilisation_pct")
             if util is not None:
                 if util >= 90:
-                    score += 20
+                    score += 25
                     _util_fired = True
                     if util > 500:
                         util_desc = (
@@ -111,7 +111,7 @@ def analyse_lender(
                     flags.append({"type": "HIGH_UTILISATION", "severity": "HIGH",
                                   "description": util_desc})
                 elif util >= 75:
-                    score += 10
+                    score += 15
                     _util_fired = True
                     flags.append({"type": "ELEVATED_UTILISATION", "severity": "MEDIUM",
                                   "description": f"{lender_name}: elevated credit utilisation at {util:.0f}%"})
@@ -223,7 +223,7 @@ def analyse_lender(
     # --- Default registered by this lender ---
     lender_defaults = [d for d in defaults if _lender_match(d.get("lender", ""), lender_name)]
     if lender_defaults:
-        score += 20
+        score += 15
         flags.append({"type": "DEFAULT_REGISTERED", "severity": "HIGH",
                       "description": f"Default registered by {lender_name} — agreement terminated in arrears"})
 
@@ -231,18 +231,19 @@ def analyse_lender(
     # Scaled by the number of ACTIVE concurrent facilities: juggling many live
     # debts at once (using one to service another) is a strong affordability
     # signal, so heavier concurrent exposure now scores materially higher than a
-    # flat marker. (Was a flat +10 for >=5 total accounts.)
+    # flat marker. (Was a flat +10 for >=5 total accounts.) Points doubled and
+    # capped at 40 on 24 Sep 2026 after the outcome model's FOS decision study.
     all_accounts = full_schema.get("accounts", [])
     active_count = sum(1 for a in all_accounts if (a.get("status") or "").upper() == "ACTIVE")
     if len(all_accounts) >= 5:
         if active_count >= 12:
-            stack_score, sev = 25, "HIGH"
+            stack_score, sev = 40, "HIGH"
         elif active_count >= 8:
-            stack_score, sev = 20, "HIGH"
+            stack_score, sev = 40, "HIGH"
         elif active_count >= 5:
-            stack_score, sev = 15, "MEDIUM"
+            stack_score, sev = 30, "MEDIUM"
         else:
-            stack_score, sev = 10, "MEDIUM"
+            stack_score, sev = 20, "MEDIUM"
         score += stack_score
         flags.append({"type": "DEBT_STACKING", "severity": sev,
                       "description": (
@@ -252,7 +253,7 @@ def analyse_lender(
 
     # --- Repeat borrowing with same lender ---
     if len(accounts) >= 2:
-        score += 10
+        score += 25
         flags.append({"type": "REPEAT_BORROWING", "severity": "MEDIUM",
                       "description": f"{len(accounts)} concurrent agreements with {lender_name} — repeat lending relationship"})
 
