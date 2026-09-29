@@ -223,7 +223,8 @@ def _is_report_key(key: str) -> bool:
 def _detect_agency(data: dict) -> str:
     report = data.get("report", {})
     if isinstance(report, dict):
-        if "FinancialAccountInformation" in report or "PersonalInformation" in report:
+        if any(k in report for k in ("FinancialAccountInformation", "PersonalInformation",
+                                     "financialAccountInformation", "personalInformation")):
             return "TRANSUNION"
         inner = report.get("report", {})
         if isinstance(inner, dict) and "soleSearch" in inner:

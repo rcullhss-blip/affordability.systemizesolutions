@@ -11,6 +11,7 @@ const FIRMS: { key: string; label: string }[] = [
   { key: "tr_sols", label: "TR Sols" },
   { key: "jf_law", label: "JF Law" },
   { key: "woodville", label: "Woodville" },
+  { key: "elmwood", label: "Elmwood" },
 ];
 
 type U = { id: number; email: string; name: string | null; role: "admin" | "firm"; firm: string | null; is_active: boolean; last_login_at: string | null };

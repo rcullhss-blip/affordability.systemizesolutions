@@ -6,7 +6,7 @@ import { setSession, type SessionUser } from "@/lib/auth";
 
 const FIRM = process.env.NEXT_PUBLIC_FIRM || "";
 const FIRM_NAME: Record<string, string> = {
-  barings: "Barings Law", accord: "Accord Solicitors", first_legal: "First Legal Solicitors", ryans: "Ryans Solicitors",
+  barings: "Barings Law", accord: "Accord Solicitors", first_legal: "First Legal Solicitors", ryans: "Ryans Solicitors", elmwood: "Elmwood",
 };
 
 function LoginForm() {

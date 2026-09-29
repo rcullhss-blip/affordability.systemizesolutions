@@ -42,7 +42,7 @@ def normalise_json_payload(data: dict) -> dict:
         return _normalise_experian_bosh(data)
 
     if agency == "TRANSUNION" or _is_transunion(data):
-        return _normalise_transunion(data)
+        return _normalise_transunion(_tu_pascalise_payload(data))
 
     if _is_equifax(data):
         return _normalise_equifax(data)
@@ -203,14 +203,46 @@ def _normalise_systemize_case(data: dict) -> dict:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _is_transunion(data: dict) -> bool:
+    """Standalone TransUnion (Callcredit) report under a top-level `report`.
+    Accepts both the PascalCase partner-post keys and the camelCase keys some
+    reseller APIs emit (e.g. the Sep-2026 law-firm sample) — the payload is
+    pascalised before normalising so both go through the full TU path."""
     report = data.get("report", {})
     if not isinstance(report, dict):
         return False
-    return (
-        "FinancialAccountInformation" in report
-        or "ElectoralRoll" in report
-        or "PersonalInformation" in report
+    return any(
+        k in report for k in (
+            "FinancialAccountInformation", "ElectoralRoll", "PersonalInformation",
+            "financialAccountInformation", "electoralRoll", "personalInformation",
+        )
     )
+
+
+# Keys that are genuinely lowercase in the PascalCase partner-post shape.
+_TU_KEEP_LOWER = {"email", "mobile"}
+
+
+def _tu_pascalise(obj):
+    """Recursively upper-case the first letter of every dict key (camelCase ->
+    PascalCase) so a camelCase TransUnion report can reuse the PascalCase
+    normaliser unchanged. Values are never touched."""
+    if isinstance(obj, dict):
+        return {
+            (k if k in _TU_KEEP_LOWER or not k else k[0].upper() + k[1:]): _tu_pascalise(v)
+            for k, v in obj.items()
+        }
+    if isinstance(obj, list):
+        return [_tu_pascalise(x) for x in obj]
+    return obj
+
+
+def _tu_pascalise_payload(data: dict) -> dict:
+    report = data.get("report") or {}
+    if "FinancialAccountInformation" in report or "PersonalInformation" in report:
+        return data
+    out = dict(data)
+    out["report"] = _tu_pascalise(report)
+    return out
 
 
 def _is_equifax(data: dict) -> bool:
@@ -1302,18 +1334,41 @@ def _eq_risk_flags(addr_spec: dict) -> list:
 # ─────────────────────────────────────────────────────────────────────────────
 
 # TransUnion AccountTypeCode → internal account_type
+# Codes seen on real/test TransUnion files (Sep 2026 law-firm sample + partner
+# post). Non-credit types map to non-financial internal types so analyse.py
+# leaves them out of affordability claims. NB "SL" is *Student Loan* on
+# TransUnion (was wrongly mapped to SECURED_LOAN before 28 Sep 2026).
 _TU_TYPE_MAP = {
+    # cards
     "CC":  "CREDIT_CARD",
+    "CO":  "CREDIT_CARD",      # company credit card, individual liable
+    "CH":  "CREDIT_CARD",      # charge card
     "ST":  "STORE_CARD",
-    "MG":  "MORTGAGE",
+    "IC":  "OTHER",            # internet credit line (e.g. PayPal Credit)
+    # loans / instalment credit
     "PL":  "PERSONAL_LOAN",
-    "HL":  "HOME_CREDIT",
+    "UL":  "PERSONAL_LOAN",    # unsecured loan
+    "LN":  "PERSONAL_LOAN",    # loan (unspecified type)
     "HP":  "HIRE_PURCHASE",
-    "CA":  "CURRENT_ACCOUNT",
+    "CS":  "HIRE_PURCHASE",    # conditional sale
+    "HL":  "HOME_CREDIT",
+    "HC":  "HOME_CREDIT",
+    "HS":  "MAIL_ORDER",       # home shopping / catalogue
+    "MO":  "MAIL_ORDER",
     "OD":  "OVERDRAFT",
-    "SL":  "SECURED_LOAN",
+    "BU":  "OTHER",            # budget account
+    # secured / property
+    "MG":  "MORTGAGE",
+    "RM":  "MORTGAGE",         # residential mortgage
+    "SM":  "MORTGAGE",         # secured / second-charge mortgage
+    "SC":  "SECURED_LOAN",
+    # out of scope
+    "SL":  "STUDENT_LOAN",
+    "CA":  "CURRENT_ACCOUNT",
     "UT":  "UTILITY",
     "TL":  "TELECOM",
+    "TM":  "TELECOM",
+    "IN":  "INSURANCE",
     "OT":  "OTHER",
 }
 
@@ -1338,7 +1393,19 @@ _TU_STATUS_MAP = {
 
 def _normalise_transunion(data: dict) -> dict:
     report     = data.get("report", {})
-    client_ref = data.get("clientRefId", "")
+    # Case reference: the partner-post wrapper key first, then the spellings a
+    # reseller API might use. Last resort is the bureau's own search reference
+    # (a GUID the firm holds against the pull) so results can still be joined
+    # back to a case instead of landing as AUTO-<job id>.
+    client_ref = ""
+    for k in ("clientRefId", "clientReference", "clientRef", "caseReference",
+              "leadReference", "matterRef", "matter_ref", "reference"):
+        v = data.get(k)
+        if v not in (None, ""):
+            client_ref = str(v).strip()
+            break
+    if not client_ref:
+        client_ref = str((report.get("ReportDetails") or {}).get("SearchReference") or "").strip()
 
     client    = _tu_client(report, client_ref)
     accounts  = _tu_accounts(report)
@@ -1347,7 +1414,7 @@ def _normalise_transunion(data: dict) -> dict:
     risk_flags = _tu_risk_flags(report)
 
     # Credit score
-    rating = report.get("Rating", {})
+    rating = report.get("Rating") or {}
     credit_score = rating.get("Score")
 
     return {
@@ -1362,16 +1429,28 @@ def _normalise_transunion(data: dict) -> dict:
 
 
 def _tu_client(report: dict, client_ref: str) -> dict:
-    pi = report.get("PersonalInformation", {})
-    report_date = report.get("ReportDetails", {}).get("DateOfReport", "")
+    pi = report.get("PersonalInformation", {}) or {}
+    rd = report.get("ReportDetails", {}) or {}
+    er = report.get("ElectoralRoll", {}) or {}
+    prev = [a for a in (pi.get("PreviousAddresses") or []) if a]
+    linked = [a for a in ((report.get("AddressLinks") or {}).get("Addresses") or []) if a]
     return {
         "name":        pi.get("Name", ""),
         "dob":         _fmt_date(pi.get("DateOfBirth", "")),
         "address":     pi.get("CurrentAddress", ""),
         "matter_ref":  client_ref or "",
-        "report_date": _fmt_date(report_date),
+        "report_date": _fmt_date(rd.get("DateOfReport", "")),
+        "search_reference": rd.get("SearchReference") or "",
         "email":       pi.get("email", ""),
         "mobile":      pi.get("mobile", ""),
+        "previous_addresses": prev or [a for a in linked if a != pi.get("CurrentAddress")],
+        "electoral_roll": {
+            "status":  er.get("CurrentStatus"),
+            "address": er.get("Address"),
+            "from":    _fmt_date(er.get("StartDate", "")),
+        } if er else None,
+        "aliases": [r.get("Alias") for r in ((report.get("OtherNames") or {}).get("Records") or []) if r.get("Alias")],
+        "financial_associations": [r.get("Name") for r in ((report.get("FinancialConnections") or {}).get("Records") or []) if r.get("Name")],
     }
 
 
@@ -1417,8 +1496,8 @@ def _tu_account(raw: dict, default_type: Optional[str]) -> Optional[dict]:
     min_payment   = _coerce_num(raw.get("MinimumPayment"))
     reg_payment   = _coerce_num(raw.get("RegularPaymentAmount"))
 
-    # Credit limit — from LimitHistory (most recent)
-    credit_limit = _tu_latest_limit(raw.get("LimitHistory", []))
+    # Credit limit — LimitHistory (most recent) with the flat `Limit` field as fallback
+    credit_limit = _tu_latest_limit(raw.get("LimitHistory", [])) or _coerce_num(raw.get("Limit"))
 
     # Utilisation
     utilisation = None
@@ -1431,19 +1510,20 @@ def _tu_account(raw: dict, default_type: Optional[str]) -> Optional[dict]:
     default_date = _fmt_date(raw.get("DefaultDate", ""))
     updated_date = _fmt_date(raw.get("UpdatedDate", ""))
 
-    # Status
-    status_raw = (raw.get("Status") or raw.get("StatusSubjectiveLevel") or "").upper()
-    if default_bal and default_bal > 0:
-        status = "DEFAULT"
-    elif status_raw in ("CLOSED", "SETTLED", "SATISFIED"):
-        status = "SETTLED"
-    elif status_raw in ("DEFAULT", "DEFAULTED"):
-        status = "DEFAULT"
-    else:
-        status = "ACTIVE"
-
     # Payment history — flatten StatusHistory into ordered list
     payment_hist = _tu_payment_history(raw.get("StatusHistory", []))
+
+    # Status. TU `Status` is free text ("Up to date", "Late payment", "Default",
+    # "Settled"); DefaultDate / DefaultBalance / a DF month are authoritative.
+    status_raw = str(raw.get("Status") or "").upper()
+    if (default_bal and default_bal > 0) or default_date or status_raw in ("DEFAULT", "DEFAULTED"):
+        status = "DEFAULT"
+    elif status_raw in ("CLOSED", "SETTLED", "SATISFIED") or end_date:
+        status = "SETTLED"
+    else:
+        status = "ACTIVE"
+    if not default_date and status == "DEFAULT":
+        default_date = _tu_first_default_month(raw.get("StatusHistory", [])) or ""
 
     return {
         "lender":          lender,
@@ -1460,7 +1540,28 @@ def _tu_account(raw: dict, default_type: Optional[str]) -> Optional[dict]:
         "monthly_payment": reg_payment or min_payment,
         "payment_history": payment_hist,
         "last_updated":    updated_date,
+        "repayment_frequency": raw.get("RepaymentFrequency") or None,
+        "account_type_code":   type_code or None,
+        "account_type_name":   raw.get("AccountTypeName") or None,
+        "opening_balance":     opening_bal,
+        "lender_type":         raw.get("LenderType") or None,
+        "status_text":         raw.get("Status") or None,
     }
+
+
+def _tu_first_default_month(status_history: list) -> Optional[str]:
+    """Earliest month whose account status is DF (default) — used as the default
+    date when the account carries no explicit DefaultDate."""
+    months = []
+    for year_rec in status_history or []:
+        y = year_rec.get("Year")
+        for m in year_rec.get("MonthlyStatusHistory", []) or []:
+            if str(m.get("AccountStatus", "")).upper() == "DF" or str(m.get("PaymentStatus", "")).upper() in ("D", "DF"):
+                months.append((int(y or 0), int(m.get("Month") or 0)))
+    if not months:
+        return None
+    y, mo = min(months)
+    return f"{y:04d}-{mo:02d}-01"
 
 
 def _tu_moda_account(raw: dict) -> Optional[dict]:
@@ -1579,21 +1680,28 @@ def _tu_defaults(report: dict, accounts: list) -> list:
     # From PublicInformation.Judgments
     for jdg in report.get("PublicInformation", {}).get("Judgments", []):
         defaults.append({
-            "lender":  jdg.get("CourtName", "Court"),
+            "lender":  jdg.get("CourtName") or "Court",
             "date":    _fmt_date(jdg.get("JudgmentDate", "") or jdg.get("OrderDate", "")),
             "amount":  _coerce_num(jdg.get("Amount")) or 0,
             "status":  "CCJ",
+            "record_status": jdg.get("Status") or None,          # Active / Satisfied
+            "satisfied_date": _fmt_date(jdg.get("SatisfiedDate", "")) or None,
+            "case_number": jdg.get("CaseNumber") or None,
         })
 
     # From PublicInformation.Insolvencies
     for ins in report.get("PublicInformation", {}).get("Insolvencies", []):
-        status_flag = "INSOLVENCY_SATISFIED" if ins.get("Status", "").lower() == "satisfied" else "INSOLVENCY"
+        ins_status = str(ins.get("Status") or "").lower()
+        status_flag = "INSOLVENCY_SATISFIED" if ins_status in ("satisfied", "discharged", "completed") else "INSOLVENCY"
         defaults.append({
-            "lender":  ins.get("CourtName", "Court"),
+            "lender":  ins.get("CourtName") or "Court",
             "date":    _fmt_date(ins.get("OrderDate", "")),
             "amount":  0,
             "status":  status_flag,
-            "type":    ins.get("OrderTypeName", "Insolvency"),
+            "type":    ins.get("OrderTypeName") or "Insolvency",
+            "record_status": ins.get("Status") or None,
+            "discharge_date": _fmt_date(ins.get("DischargeDate", "")) or None,
+            "case_reference": ins.get("CaseReference") or None,
         })
 
     return defaults
@@ -1604,15 +1712,36 @@ def _tu_searches(report: dict) -> list:
     searches = []
     search_data = report.get("Searches", report.get("SearchHistory", []))
     if isinstance(search_data, dict):
-        search_data = search_data.get("Records", [])
-    for s in search_data:
+        # Partner-post: {"Records": [...]}. Reseller shape: four lists keyed
+        # by address × searcher (CurrentAddressUserSearches, ...OtherSearches).
+        recs = search_data.get("Records")
+        if recs is None:
+            recs = []
+            for k, v in search_data.items():
+                if k.endswith("Searches") and isinstance(v, list):
+                    recs.extend(v)
+        search_data = recs
+    for s in search_data or []:
+        if not isinstance(s, dict):
+            continue
         search_type = (s.get("SearchType") or s.get("Type") or "").upper()
-        is_hard = search_type in ("FULL", "APPLICATION", "HARD", "A")
+        purpose = str(s.get("SearchPurpose") or "").lower()
+        code = str(s.get("SearchPurposeCode") or "").upper()
+        if search_type:
+            is_hard = search_type in ("FULL", "APPLICATION", "HARD", "A")
+        else:
+            # Purpose-based: credit applications are hard; the consumer's own
+            # file request, quotations, ID/AML checks and insurance are soft.
+            soft_words = ("credit file request", "quotation", "quote", "identity",
+                          "id check", "aml", "insurance", "tracing", "trace", "consumer")
+            is_hard = ("application" in purpose or "credit" in purpose) and not any(w in purpose for w in soft_words)
         searches.append({
             "date":           _fmt_date(s.get("Date") or s.get("SearchDate", "")),
-            "lender":         s.get("MemberName") or s.get("CompanyName", ""),
+            "lender":         s.get("MemberName") or s.get("CompanyName") or s.get("Company", ""),
             "search_type":    "HARD" if is_hard else "SOFT",
             "search_subtype": "APPLICATION" if is_hard else "QUOTATION",
+            "raw_search_type": s.get("SearchPurpose") or search_type or None,
+            "search_purpose_code": code or None,
         })
     return searches
 
@@ -1631,11 +1760,11 @@ def _tu_risk_flags(report: dict) -> list:
 
     # Insolvencies
     for ins in report.get("PublicInformation", {}).get("Insolvencies", []):
-        satisfied = ins.get("Status", "").lower() == "satisfied"
+        satisfied = str(ins.get("Status") or "").lower() in ("satisfied", "discharged", "completed")
         flags.append({
             "flag_type":   "INSOLVENCY",
             "description": (
-                f"{ins.get('OrderTypeName', 'Insolvency')} at {ins.get('CourtName', 'Court')} "
+                f"{ins.get('OrderTypeName') or 'Insolvency'} at {ins.get('CourtName') or 'Court'} "
                 f"({'Satisfied' if satisfied else 'Active'})"
             ),
             "severity":    "MEDIUM" if satisfied else "HIGH",
@@ -1646,7 +1775,7 @@ def _tu_risk_flags(report: dict) -> list:
     for jdg in report.get("PublicInformation", {}).get("Judgments", []):
         flags.append({
             "flag_type":   "CCJ",
-            "description": f"County Court Judgment: £{_coerce_num(jdg.get('Amount', 0))} at {jdg.get('CourtName', '')}",
+            "description": f"County Court Judgment: £{_coerce_num(jdg.get('Amount', 0))} at {jdg.get('CourtName') or 'Court'}",
             "severity":    "HIGH",
             "date":        _fmt_date(jdg.get("JudgmentDate", "") or jdg.get("OrderDate", "")),
         })
@@ -1655,7 +1784,7 @@ def _tu_risk_flags(report: dict) -> list:
     for noc in report.get("NoticesOfCorrection", {}).get("Records", []):
         flags.append({
             "flag_type":   "NOTICE_OF_CORRECTION",
-            "description": noc.get("Text", "Notice of correction on file"),
+            "description": noc.get("Text") or noc.get("Description") or "Notice of correction on file",
             "severity":    "LOW",
             "date":        None,
         })

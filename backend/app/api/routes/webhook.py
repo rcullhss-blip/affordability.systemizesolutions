@@ -276,10 +276,16 @@ async def ingest_bureau_post(
     request: Request,
     batch_name: str = Query(default="webhook-batch"),
     matter_ref: Optional[str] = Query(default=None),
+    firm: Optional[str] = Query(default=None),
     db: Session = Depends(get_db),
     _auth=Depends(_require_api_key),
 ):
-    """Accept a single Equifax or TransUnion JSON partner-post."""
+    """Accept a single Equifax or TransUnion JSON partner-post.
+
+    `firm` selects the LOC letterhead (e.g. ?firm=elmwood). Omitted = the
+    existing default. An unknown firm is rejected rather than silently
+    producing First Legal-branded letters."""
+    firm = _checked_firm(firm)
     try:
         raw_bytes = await request.body()
         data = json.loads(raw_bytes)
@@ -302,13 +308,15 @@ async def ingest_bureau_post(
 
     batch = db.query(Batch).filter(Batch.name == batch_name).first()
     if not batch:
-        batch = Batch(name=batch_name, total_reports=0)
+        batch = Batch(name=batch_name, total_reports=0, **({"firm": firm} if firm else {}))
         db.add(batch)
         db.flush()
 
     batch.total_reports = (batch.total_reports or 0) + 1
 
-    job = Job(batch_id=batch.id, s3_raw_key=s3_key, status="PENDING")
+    # Per-job firm wins over the batch firm in the document worker, so a report
+    # posted into an existing batch still gets the right letterhead.
+    job = Job(batch_id=batch.id, s3_raw_key=s3_key, status="PENDING", **({"firm": firm} if firm else {}))
     db.add(job)
     db.commit()        # commit before enqueue so the worker can find the job
     db.refresh(job)
@@ -330,11 +338,13 @@ async def ingest_bureau_post(
 async def ingest_bureau_batch(
     request: Request,
     batch_name: str = Query(default="webhook-batch"),
+    firm: Optional[str] = Query(default=None),
     db: Session = Depends(get_db),
     _auth=Depends(_require_api_key),
 ):
     """
     Accept an array of bureau JSON payloads in a single request (up to 15,000).
+    `firm` selects the LOC letterhead for the whole batch (e.g. ?firm=elmwood).
 
     For batches up to 500 records, jobs are dispatched inline and the response
     includes the final job count. For larger batches the payload is stored in S3
@@ -362,6 +372,8 @@ async def ingest_bureau_batch(
     if not payloads:
         raise HTTPException(status_code=400, detail="Empty batch")
 
+    firm = _checked_firm(firm)
+    _firm_kw = {"firm": firm} if firm else {}
     total = len(payloads)
 
     # ── Large batch: store manifest and expand in background ──────────────────
@@ -374,7 +386,7 @@ async def ingest_bureau_batch(
             "application/json",
         )
 
-        batch = Batch(name=batch_name, total_reports=0)  # updated by intake worker
+        batch = Batch(name=batch_name, total_reports=0, **_firm_kw)  # updated by intake worker
         db.add(batch)
         db.flush()
         batch_id = batch.id
@@ -402,7 +414,7 @@ async def ingest_bureau_batch(
         except ValueError as e:
             raise HTTPException(status_code=422, detail=f"Payload #{i} unrecognised bureau format: {e}")
 
-    batch = Batch(name=batch_name, total_reports=total)
+    batch = Batch(name=batch_name, total_reports=total, **_firm_kw)
     db.add(batch)
     db.flush()
 
@@ -436,10 +448,24 @@ async def ingest_bureau_batch(
     }
 
 
+def _checked_firm(firm: Optional[str]) -> Optional[str]:
+    """Normalise and validate an optional ?firm= brand id."""
+    if firm is None or not firm.strip():
+        return None
+    firm = firm.strip().lower()
+    if not is_known_firm(firm):
+        raise HTTPException(
+            status_code=422,
+            detail=(f"Unknown firm '{firm}' — expected one of: {', '.join(sorted(KNOWN_FIRMS))}"),
+        )
+    return firm
+
+
 def _detect_agency(data: dict) -> str:
     report = data.get("report", {})
     if isinstance(report, dict):
-        if "FinancialAccountInformation" in report or "PersonalInformation" in report:
+        if any(k in report for k in ("FinancialAccountInformation", "PersonalInformation",
+                                     "financialAccountInformation", "personalInformation")):
             return "TRANSUNION"
         inner = report.get("report", {})
         if isinstance(inner, dict) and "soleSearch" in inner:

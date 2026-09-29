@@ -69,6 +69,11 @@ def _looks_like_json_partner_post(raw_bytes: bytes) -> bool:
                 '"agency"',
                 '"transactionId"',   # Experian "Bosh" variant wrapper
                 '"jsonReport"',      # Experian "Bosh" variant wrapper
+                # camelCase TransUnion (reseller API, e.g. Elmwood): the payload
+                # opens {"report": {"reportDetails": ..., "personalInformation": ...
+                '"reportDetails"',
+                '"personalInformation"',
+                '"financialAccountInformation"',
             )
         )
     except Exception:

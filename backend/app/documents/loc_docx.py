@@ -124,6 +124,28 @@ FIRM_CONFIGS = {
         "closing": "Yours faithfully,",
         "signoff": ["JF Law", "45 Fitzroy Street, London, W1T 6EB"],
     },
+    # Elmwood — 7th sols brand, staged 29 Sep 2026 ahead of go-live. Credit
+    # reports arrive as camelCase TransUnion JSON (see json_normaliser
+    # _tu_pascalise_payload). TODO(elmwood): replace every placeholder below
+    # with the confirmed letterhead text (legal name, address, SRA number,
+    # company number, registered office), drop the logo at
+    # backend/app/documents/elmwood-logo.png (keep it under ~30 KB; a missing
+    # logo renders a logo-less letterhead rather than failing the job), set
+    # logo_w to suit its aspect ratio, and add "client_account" bank details
+    # (see ryans) if supplied. DO NOT release letters while placeholders remain.
+    "elmwood": {
+        "name":    "Elmwood",
+        "address": "[ELMWOOD ADDRESS — TO BE CONFIRMED]",
+        "logo":    os.path.join(_DOC_DIR, "elmwood-logo.png"),
+        "logo_w":  4.6,  # cm — adjust to the logo's aspect ratio once supplied
+        "footer1": ("Please ensure that all correspondence is sent to: "
+                    "[ELMWOOD ADDRESS — TO BE CONFIRMED]."),
+        "footer2": ("Elmwood is authorised and regulated by the Solicitors Regulation Authority "
+                    "under registration number [SRA — TBC]. Registered in England and Wales with "
+                    "Company Number: [TBC]. Registered Office: [TBC]."),
+        "closing": "Yours faithfully,",
+        "signoff": ["Elmwood", "[ELMWOOD ADDRESS — TO BE CONFIRMED]"],
+    },
 }
 
 # Brand ids the platform recognises. Inbound IRL cases are validated against this

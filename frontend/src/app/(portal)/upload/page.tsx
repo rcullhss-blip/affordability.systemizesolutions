@@ -21,6 +21,17 @@ const FIRM_CONFIGS: Record<string, any> = {
     footer:  "Accord Associates Solicitors Limited · SRA 8001614 · Company 14309081",
     logoStyle: { height: "46px", width: "auto", objectFit: "contain" as const },
   },
+  // Elmwood — staged 29 Sep 2026. No logo yet: `logo: null` renders the firm
+  // name as text. When the logo arrives, drop it in public/elmwood-logo.png,
+  // set logo: "/elmwood-logo.png" and replace the footer with the SRA /
+  // company line.
+  elmwood: {
+    label:   "Elmwood",
+    logo:    null,
+    eyebrow: "Elmwood",
+    footer:  "Elmwood",
+    logoStyle: { height: "40px", width: "auto", objectFit: "contain" as const },
+  },
   first_legal: {
     label:   "First Legal",
     logo:    "/first-legal-logo.png",
@@ -279,7 +290,9 @@ export default function UploadPortalPage() {
         <header className="portal-header">
           <div className="portal-header-left">
             {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src={FIRM_CONFIG.logo} alt={FIRM_CONFIG.label} style={FIRM_CONFIG.logoStyle} />
+            {FIRM_CONFIG.logo
+              ? <img src={FIRM_CONFIG.logo} alt={FIRM_CONFIG.label} style={FIRM_CONFIG.logoStyle} />
+              : <span style={{ fontSize: "20px", fontWeight: 700, letterSpacing: "0.01em" }}>{FIRM_CONFIG.label}</span>}
             <div className="portal-divider" />
             <span className="portal-badge">{FIRM_LABEL} · Secure Upload Portal</span>
           </div>

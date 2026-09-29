@@ -5,6 +5,7 @@ import { RequireAuth } from "@/components/auth/RequireAuth";
 const FIRM = process.env.NEXT_PUBLIC_FIRM || "first_legal";
 const FIRM_NAME = FIRM === "barings" ? "Barings Law"
   : FIRM === "accord" ? "Accord Solicitors"
+  : FIRM === "elmwood" ? "Elmwood"
   : "First Legal Solicitors";
 
 export const metadata: Metadata = {
