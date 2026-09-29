@@ -16,7 +16,14 @@ import type { NextRequest } from "next/server";
  * the check below only runs when that env var is present.)
  */
 
-const PORTAL_HOSTS = ["affordability.systemizesolutions.co.uk"];
+// Hosts that are upload-only: every path except /upload and /login is sent to
+// /upload, so the bare address never lands on the admin dashboard (an admin
+// login would otherwise see it, and a firm login would see the "Systemize staff
+// only" page). Firm portals on *.vercel.app are listed individually.
+const PORTAL_HOSTS = [
+  "affordability.systemizesolutions.co.uk",
+  "systemize-elmwood.vercel.app",
+];
 
 function basicCredentialsOk(header: string | null, configured: string): boolean {
   if (!header || !header.startsWith("Basic ")) return false;
